@@ -54,7 +54,12 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 project(ar_audioengine LANGUAGES CXX)
 
+set(BUILD_PROGRAMS OFF CACHE BOOL "Build libsndfile programs" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "Build libsndfile examples" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "Build libsndfile tests" FORCE)
+set(ENABLE_PACKAGE_CONFIG OFF CACHE BOOL "Generate package config" FORCE)
 
+add_subdirectory(dependencies/libsndfile)
 #-------------------------------------------------------------------------
 # sources
 #-------------------------------------------------------------------------
@@ -95,7 +100,12 @@ add_executable(ar_audioengine ${CORE_SRCS})
 target_include_directories(ar_audioengine PRIVATE
     ${CMAKE_SYSROOT}/usr/include/acdbdata
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/libsndfile/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/RTNeural
+    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/eigen
 )
+
+target_compile_definitions(ar_audioengine PRIVATE RTNEURAL_USE_EIGEN)
 if(PROJECT_PATH)
     target_include_directories(ar_audioengine PRIVATE ${PROJECT_PATH})
 endif()
@@ -144,5 +154,5 @@ else()
     target_compile_options(ar_audioengine PRIVATE -O2)
 endif()
 
-target_link_libraries(ar_audioengine PRIVATE tinyalsa expat pthread)
+target_link_libraries(ar_audioengine PRIVATE tinyalsa expat pthread sndfile)
 #-------------------------------------------------------------------------

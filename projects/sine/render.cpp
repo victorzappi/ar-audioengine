@@ -1,7 +1,7 @@
 #include <math.h>
 #include "render.h"
-
-
+#include "sndfile.h"
+#include <RTNeural/RTNeural.h>
 static const float amp = 0.5;
 static const float freq = 330.0;
 
@@ -34,4 +34,14 @@ void render(struct audio_ctx *ctx, void *user_data)
 void cleanup(struct audio_ctx *ctx, void *user_data) 
 {
     return;
+}
+
+void test_dependencies()
+{
+    char buffer[128];
+    sf_command(NULL, SFC_GET_LIB_VERSION, buffer, sizeof(buffer));
+    std::cout << "libsndfile version: " << buffer << std::endl;
+
+    RTNeural::ModelT<float, 1, 1, RTNeural::DenseT<float, 1, 4>> model;
+    std::cout << "RTNeural model initialized successfully!" << std::endl;
 }
