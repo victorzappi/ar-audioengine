@@ -7,3 +7,6 @@
 [submodule "dependencies/RTNeural"]
 	path = dependencies/RTNeural
 	url = https://github.com/jatinchowdhury18/RTNeural.git
+[submodule "dependencies/eigen"]
+	path = dependencies/eigen
+	url = https://gitlab.com/libeigen/eigen.git
