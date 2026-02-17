@@ -1,0 +1,9 @@
+[submodule "dependencies"]
+	path = dependencies
+	url = https://github.com/libsndfile/libsndfile.git
+[submodule "dependencies/libsndfile"]
+	path = dependencies/libsndfile
+	url = https://github.com/libsndfile/libsndfile.git
+[submodule "dependencies/RTNeural"]
+	path = dependencies/RTNeural
+	url = https://github.com/jatinchowdhury18/RTNeural.git
