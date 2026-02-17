@@ -39,9 +39,6 @@ configure, build and clean commands in CMakeLists.txt
 #define OPTPARSE_IMPLEMENTATION
 #include "optparse.h"
 
-//TODO pass these at build time with these as defaults
-#define MIXER_PATHS "/etc/mixer_paths_qcs6490_rb3gen2.xml"
-#define BACKEND_CONF_FILE "/etc/backend_conf.xml"
 //TODO pass this at run-time
 const char* hw_mixer_path = "speaker";
 

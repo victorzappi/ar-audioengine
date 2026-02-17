@@ -1,21 +1,35 @@
 # CMakeLists for ar_audioengine
-# build for Yocto RB3 Gen2
 
+# Build on board
 # From audio engine root:
-
+#
 # _Configure in new 'build' dir:
 # cmake -B build -DPROJECT_PATH=projects/my_synth
-
-#_BUild [bin in build]
+# 
+# __Optional configurations (board specific)
+# -DMIXER_PATHS=/path/to/on_board/mixer_path.xml
+# -DMIXER_PATHS=/path/to/on_board/backend_config.xml
+#
+#_Build [bin in build]
 # cmake --buld build
-
+#
 # _Clean 
 # cmake --build build --target clean
 # or more drastically
 # rm -rf ./build
-
+#
 #_To switch to default project after config, unset var
 # cmake -B build -UPROJECT_PATH
+
+# Cross-compilation via SDK/toolchain
+#
+#_source SDK environment, for example:
+# source /opt/qcom-wayland/1.6/environment-setup-armv8-2a-qcom-linux
+#
+#_pass the cmake environment exported by the SDK to the usual config:
+# cmake -B build -DCMAKE_TOOLCHAIN_FILE="$OE_CMAKE_TOOLCHAIN_FILE" -DPROJECT_PATH=projects/my_synth
+#
+# rest is the same as on board build
 
 
 cmake_minimum_required(VERSION 3.10)
@@ -71,8 +85,9 @@ endif()
 
 
 #-------------------------------------------------------------------------
-# definitions
+# definitions (can be overridden at configure time)
 #-------------------------------------------------------------------------
+# project to build
 if(PROJECT_PATH)
     # Strip trailing slash to avoid empty result from get_filename_component
     string(REGEX REPLACE "/$" "" PROJECT_PATH_CLEAN "${PROJECT_PATH}")
@@ -83,6 +98,21 @@ if(PROJECT_PATH)
 else()
     target_compile_definitions(ar_audioengine PRIVATE PROJECT_NAME="default")
 endif()
+
+# board-specific xml file paths 
+if(NOT MIXER_PATHS)
+    set(MIXER_PATHS "/etc/mixer_paths_qcs6490_rb3gen2.xml")
+endif()
+if(NOT BACKEND_CONF_FILE)
+    set(BACKEND_CONF_FILE "/etc/backend_conf.xml")
+endif()
+target_compile_definitions(ar_audioengine PRIVATE
+    MIXER_PATHS="${MIXER_PATHS}"
+    BACKEND_CONF_FILE="${BACKEND_CONF_FILE}"
+)
+message(STATUS "Mixer paths: ${MIXER_PATHS}")
+message(STATUS "Backend conf: ${BACKEND_CONF_FILE}")
+#-------------------------------------------------------------------------
 #-------------------------------------------------------------------------
 
 
