@@ -3,14 +3,13 @@
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
-/* audioengine
-real-time audio engine
+/*ar_audioengine
+real-time audioreach-based audio engine
 
-build for Yocto RPi4:
-make
+usage:
+./ar_audioengine -c 100 -d 100 -B CODEC_DMA-LPAIF_WSA-RX-0 -C 0 -D 0 -x PCM_LL_PLAYBACK -w DEVICEPP_RX_AUDIO_MBDRC -z SPEAKER -i INSTANCE_1
 
-usage on Yocto RPi4:
-./audioengine -c 100 -d 100 -B CODEC_DMA-LPAIF_WSA-RX-0 -C 0 -D 0 -x PCM_LL_PLAYBACK -w DEVICEPP_RX_AUDIO_MBDRC -z SPEAKER -i INSTANCE_1
+configure, build and clean commands in CMakeLists.txt
 */
 
 // next steps:
@@ -40,9 +39,10 @@ usage on Yocto RPi4:
 #define OPTPARSE_IMPLEMENTATION
 #include "optparse.h"
 
+//TODO pass these at build time with these as defaults
 #define MIXER_PATHS "/etc/mixer_paths_qcs6490_rb3gen2.xml"
 #define BACKEND_CONF_FILE "/etc/backend_conf.xml"
-
+//TODO pass this at run-time
 const char* hw_mixer_path = "speaker";
 
 struct cmd {

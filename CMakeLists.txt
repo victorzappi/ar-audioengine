@@ -61,7 +61,7 @@ add_executable(ar_audioengine ${CORE_SRCS})
 # includes
 #-------------------------------------------------------------------------
 target_include_directories(ar_audioengine PRIVATE
-    /usr/include/acdbdata
+    ${CMAKE_SYSROOT}/usr/include/acdbdata
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 if(PROJECT_PATH)
