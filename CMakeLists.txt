@@ -6,9 +6,12 @@
 # _Configure in new 'build' dir:
 # cmake -B build -DPROJECT_PATH=projects/my_synth
 # 
-# __Optional configurations (board specific)
-# -DMIXER_PATHS=/path/to/on_board/mixer_path.xml
-# -DMIXER_PATHS=/path/to/on_board/backend_config.xml
+# __Optional configurations (board specific):
+#   -DMIXER_PATHS=/path/to/on_board/mixer_path.xml
+#   -DMIXER_PATHS=/path/to/on_board/backend_config.xml
+#
+# __for debug build (-O0 -g):
+#   -DCMAKE_BUILD_TYPE=Debug
 #
 #_Build [bin in build]
 # cmake --buld build
@@ -33,9 +36,24 @@
 
 
 cmake_minimum_required(VERSION 3.10)
-project(ar_audioengine LANGUAGES CXX)
+
 
 message(STATUS "=== Configuring ar_audioengine ===")
+
+
+#-------------------------------------------------------------------------
+# build configuration/type
+#-------------------------------------------------------------------------
+# Default to Release if not specified
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+#-------------------------------------------------------------------------
+
+
+project(ar_audioengine LANGUAGES CXX)
+
 
 #-------------------------------------------------------------------------
 # sources
@@ -113,12 +131,18 @@ target_compile_definitions(ar_audioengine PRIVATE
 message(STATUS "Mixer paths: ${MIXER_PATHS}")
 message(STATUS "Backend conf: ${BACKEND_CONF_FILE}")
 #-------------------------------------------------------------------------
-#-------------------------------------------------------------------------
 
 
 #-------------------------------------------------------------------------
 # options and libs
 #-------------------------------------------------------------------------
 target_compile_options(ar_audioengine PRIVATE -Wall -fdiagnostics-color=always)
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(ar_audioengine PRIVATE -O0 -g)
+else()
+    target_compile_options(ar_audioengine PRIVATE -O2)
+endif()
+
 target_link_libraries(ar_audioengine PRIVATE tinyalsa expat pthread)
 #-------------------------------------------------------------------------
