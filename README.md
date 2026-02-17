@@ -111,11 +111,15 @@ cmake --build build --target clean
 
 ### Cross-compilation
 
-Source the Qualcomm SDK environment, then pass the toolchain file:
+Source the Qualcomm SDK environment, then pass the CMake toolchain file:
 ```bash
 source /opt/qcom-wayland/1.6/environment-setup-armv8-2a-qcom-linux
 cmake -B build -DCMAKE_TOOLCHAIN_FILE="$OE_CMAKE_TOOLCHAIN_FILE" -DPROJECT_PATH=projects/sine
 cmake --build build
+```
+If the path to the CMake toolchain file is not exported automatically, look for it in the SDK sysroot (_$OECORE_NATIVE_SYSROOT_). The path should look like this:
+```bash
+cmake -B build -DCMAKE_TOOLCHAIN_FILE="$OECORE_NATIVE_SYSROOT/usr/share/cmake/OEToolchainConfig.cmake" -DPROJECT_PATH=projects/sine
 ```
 
 ## Running
