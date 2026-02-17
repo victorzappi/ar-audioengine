@@ -73,6 +73,7 @@ cmake --build build
 
 The `PROJECT_PATH` can be relative to the source directory or absolute. The specified folder must contain a `render.cpp` file. All `.cpp` files in that folder are compiled, and the folder is added to the include path.
 
+
 ### Switching projects
 
 CMake caches the project path. To switch, either delete the build directory:
@@ -90,10 +91,31 @@ cmake -B build -UPROJECT_PATH
 cmake --build build
 ```
 
+### Build options
+```bash
+# Debug build (default is Release with -O2)
+cmake -B build -DCMAKE_BUILD_TYPE=Debug
+
+# Custom board-specific config file paths
+cmake -B build -DMIXER_PATHS=/etc/mixer_paths_custom.xml -DBACKEND_CONF_FILE=/etc/backend_conf_custom.xml
+```
+
+If not passed, the default configuration XML files will target the [Qualcomm RB3 Gen 2](https://www.qualcomm.com/developer/hardware/rb3-gen-2-development-kit) board.\
+All options can be combined in a single configure command.
+
 ### Clean
 
 ```bash
 cmake --build build --target clean
+```
+
+### Cross-compilation
+
+Source the Qualcomm SDK environment, then pass the toolchain file:
+```bash
+source /opt/qcom-wayland/1.6/environment-setup-armv8-2a-qcom-linux
+cmake -B build -DCMAKE_TOOLCHAIN_FILE="$OE_CMAKE_TOOLCHAIN_FILE" -DPROJECT_PATH=projects/sine
+cmake --build build
 ```
 
 ## Running
