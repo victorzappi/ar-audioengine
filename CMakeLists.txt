@@ -53,14 +53,7 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 
 project(ar_audioengine LANGUAGES CXX)
-
-set(BUILD_PROGRAMS OFF CACHE BOOL "Build libsndfile programs" FORCE)
-set(BUILD_EXAMPLES OFF CACHE BOOL "Build libsndfile examples" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "Build libsndfile tests" FORCE)
-set(ENABLE_PACKAGE_CONFIG OFF CACHE BOOL "Generate package config" FORCE)
-
-add_subdirectory(dependencies/libsndfile)
-#-------------------------------------------------------------------------
+#----------------------------
 # sources
 #-------------------------------------------------------------------------
 set(CORE_SRCS
@@ -100,12 +93,8 @@ add_executable(ar_audioengine ${CORE_SRCS})
 target_include_directories(ar_audioengine PRIVATE
     ${CMAKE_SYSROOT}/usr/include/acdbdata
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/libsndfile/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/RTNeural
-    ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/eigen
 )
 
-target_compile_definitions(ar_audioengine PRIVATE RTNEURAL_USE_EIGEN)
 if(PROJECT_PATH)
     target_include_directories(ar_audioengine PRIVATE ${PROJECT_PATH})
 endif()
@@ -154,5 +143,30 @@ else()
     target_compile_options(ar_audioengine PRIVATE -O2)
 endif()
 
-target_link_libraries(ar_audioengine PRIVATE tinyalsa expat pthread sndfile)
+target_link_libraries(ar_audioengine PRIVATE tinyalsa expat pthread)
 #-------------------------------------------------------------------------
+
+
+#Linking LIBSNDFILE
+
+message(STATUS "\tConfiguring Libsndfile...")
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "Build tests" FORCE)
+set(BUILD_PROGRAMS OFF CACHE BOOL "Build programs" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
+set(ENABLE_CPACK OFF CACHE BOOL "Enable CPack" FORCE)
+set(ENABLE_PACKAGE_CONFIG OFF CACHE BOOL "Generate and install package config file" FORCE)
+set(INSTALL_PKGCONFIG_MODULE OFF CACHE BOOL "Generate and install pkg-config module" FORCE)
+add_subdirectory(dependencies/libsndfile)
+target_include_directories(ar_audioengine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/libsndfile/include)
+target_link_libraries(ar_audioengine PRIVATE sndfile)
+
+#Linking RTNeural
+set(CPM_SOURCE_CACHE "${CMAKE_BINARY_DIR}/cpm_cache")
+file(MAKE_DIRECTORY ${CPM_SOURCE_CACHE})
+set(RTNEURAL_EIGEN ON CACHE BOOL "Use RTNeural with this backend" FORCE)
+set(RTNEURAL_XSIMD OFF CACHE BOOL "Use RTNeural with this backend" FORCE)
+set(RTNEURAL_STL OFF CACHE BOOL "Use RTNeural with this backend" FORCE)
+add_subdirectory(dependencies/RTNeural)
+#target_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/dependencies/RTNeural/RTNeural)
+target_link_libraries(ar_audioengine PRIVATE RTNeural)
