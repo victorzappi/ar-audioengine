@@ -62,6 +62,9 @@ set(CORE_SRCS
     core/hw_mixer.cpp
     core/agm_mixer.cpp
 )
+
+
+
 # pass project path as either relative to source dir or absolute
 if(PROJECT_PATH)
     # Resolve relative paths against the source directory
@@ -133,9 +136,14 @@ message(STATUS "Backend conf: ${BACKEND_CONF_FILE}")
 
 
 #-------------------------------------------------------------------------
-# options and libs
+# options
 #-------------------------------------------------------------------------
 target_compile_options(ar_audioengine PRIVATE -Wall -fdiagnostics-color=always)
+
+# Remove unused functions and data from final binary
+add_compile_options(-ffunction-sections -fdata-sections)
+add_link_options(-Wl,--gc-sections)
+
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(ar_audioengine PRIVATE -O0 -g)
@@ -143,30 +151,10 @@ else()
     target_compile_options(ar_audioengine PRIVATE -O2)
 endif()
 
-target_link_libraries(ar_audioengine PRIVATE tinyalsa expat pthread)
 #-------------------------------------------------------------------------
+add_subdirectory(dependencies)
+target_link_libraries(ar_audioengine 
+    PRIVATE dependencies
+    PRIVATE tinyalsa expat pthread
+)
 
-
-#Linking LIBSNDFILE
-
-message(STATUS "\tConfiguring Libsndfile...")
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "Build tests" FORCE)
-set(BUILD_PROGRAMS OFF CACHE BOOL "Build programs" FORCE)
-set(BUILD_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
-set(ENABLE_CPACK OFF CACHE BOOL "Enable CPack" FORCE)
-set(ENABLE_PACKAGE_CONFIG OFF CACHE BOOL "Generate and install package config file" FORCE)
-set(INSTALL_PKGCONFIG_MODULE OFF CACHE BOOL "Generate and install pkg-config module" FORCE)
-add_subdirectory(dependencies/libsndfile)
-target_include_directories(ar_audioengine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/libsndfile/include)
-target_link_libraries(ar_audioengine PRIVATE sndfile)
-
-#Linking RTNeural
-set(CPM_SOURCE_CACHE "${CMAKE_BINARY_DIR}/cpm_cache")
-file(MAKE_DIRECTORY ${CPM_SOURCE_CACHE})
-set(RTNEURAL_EIGEN ON CACHE BOOL "Use RTNeural with this backend" FORCE)
-set(RTNEURAL_XSIMD OFF CACHE BOOL "Use RTNeural with this backend" FORCE)
-set(RTNEURAL_STL OFF CACHE BOOL "Use RTNeural with this backend" FORCE)
-add_subdirectory(dependencies/RTNeural)
-#target_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/dependencies/RTNeural/RTNeural)
-target_link_libraries(ar_audioengine PRIVATE RTNeural)
