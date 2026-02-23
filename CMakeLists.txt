@@ -37,6 +37,7 @@
 
 cmake_minimum_required(VERSION 3.10)
 
+project(ar_audioengine LANGUAGES CXX)
 
 message(STATUS "=== Configuring ar_audioengine ===")
 
@@ -52,8 +53,7 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 #-------------------------------------------------------------------------
 
 
-project(ar_audioengine LANGUAGES CXX)
-#----------------------------
+#-------------------------------------------------------------------------
 # sources
 #-------------------------------------------------------------------------
 set(CORE_SRCS
@@ -62,8 +62,6 @@ set(CORE_SRCS
     core/hw_mixer.cpp
     core/agm_mixer.cpp
 )
-
-
 
 # pass project path as either relative to source dir or absolute
 if(PROJECT_PATH)
@@ -150,11 +148,20 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 else()
     target_compile_options(ar_audioengine PRIVATE -O2)
 endif()
+#-------------------------------------------------------------------------
+
 
 #-------------------------------------------------------------------------
+# dependencies and libraries
+#-------------------------------------------------------------------------
 add_subdirectory(dependencies)
+add_subdirectory(libraries)
+
 target_link_libraries(ar_audioengine 
     PRIVATE dependencies
+    PRIVATE libraries
     PRIVATE tinyalsa expat pthread
 )
+#-------------------------------------------------------------------------
+
 
