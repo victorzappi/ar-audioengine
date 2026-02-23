@@ -1,11 +1,42 @@
-# Build
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.so
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Build dir
 build/
+
+# Build objs
+obj/
 
 # Editor
 .vscode/
 *.swp
 *~
 
+# CMake
+**/CMakeCache.txt
+**/CMakeFiles/
+**/cmake_install.cmake
+
 # OS
 .DS_Store
 Thumbs.db
+
+# Temporary local projects
+_projects
+_projects/

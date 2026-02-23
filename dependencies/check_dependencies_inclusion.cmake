@@ -1,5 +1,5 @@
-# Gather all project files under LDSP_PROJECT
-file(GLOB_RECURSE FILES_TO_SEARCH "${CMAKE_SOURCE_DIR}/projects/*")
+# Gather all project files under user project
+file(GLOB_RECURSE FILES_TO_SEARCH "${PROJECT_PATH}/*")
 
 # How many variables?
 list(LENGTH VARIABLE_NAMES num_vars)

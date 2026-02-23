@@ -1,7 +1,14 @@
+/*
+ * Copyright 2026 Victor Zappi
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
+ */
+
+
 #include <math.h>
 #include "render.h"
 #include "sndfile.h"
 #include <RTNeural/RTNeural.h>
+
 static const float amp = 0.5;
 static const float freq = 330.0;
 
