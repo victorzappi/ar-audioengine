@@ -17,7 +17,7 @@ foreach(idx RANGE 0 ${last_idx})
 
     # Scan through each file
     foreach(FILE_PATH IN LISTS FILES_TO_SEARCH)
-        message(STATUS "SEARCHING: ${FILE_PATH}")
+        #message(STATUS "SEARCHING: ${FILE_PATH}")
         file(READ "${FILE_PATH}" FILE_CONTENTS)
 
         # Try each pattern in this group
@@ -26,7 +26,7 @@ foreach(idx RANGE 0 ${last_idx})
             if(NOT POSITION EQUAL -1)
                 set(STRING_FOUND TRUE)
                 set(FOUND_STRING "${SEARCH_STRING}")
-                message(STATUS "[DEBUG] Found '${SEARCH_STRING}' in '${FILE_PATH}'")
+                #message(STATUS "[DEBUG] Found '${SEARCH_STRING}' in '${FILE_PATH}'")
                 break()
             endif()
         endforeach()
@@ -36,11 +36,11 @@ foreach(idx RANGE 0 ${last_idx})
         endif()
     endforeach()
 
-    message(STATUS "STIRNG FOUND?: ${STRING_FOUND}")
+    #message(STATUS "STIRNG FOUND?: ${STRING_FOUND}")
     # Set the cache var and report final result
     if(STRING_FOUND)
         set(${VAR_NAME} TRUE CACHE BOOL "Found at least one search string for ${VAR_NAME}" FORCE)
-        message(STATUS "[DEBUG] -> ${VAR_NAME}=TRUE (matched '${FOUND_STRING}')")
+        #message(STATUS "[DEBUG] -> ${VAR_NAME}=TRUE (matched '${FOUND_STRING}')")
     # else()
         # message(STATUS "[DEBUG] -> No matches found for ${VAR_NAME}")
     endif()
