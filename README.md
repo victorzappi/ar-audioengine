@@ -73,7 +73,6 @@ cmake --build build
 
 The `PROJECT_PATH` can be relative to the source directory or absolute. The specified folder must contain a `render.cpp` file. All `.cpp` files in that folder are compiled, and the folder is added to the include path.
 
-
 ### Switching projects
 
 CMake caches the project path. To switch, either delete the build directory:
@@ -190,6 +189,8 @@ void cleanup(struct audio_ctx *ctx, void *user_data)
 ```
 
 You can add additional `.cpp` and `.h` files in your project folder — they will be compiled and the folder will be in the include path.
+
+If your project depends on optional libraries, declare them in `dependencies.cmake` in the same folder rather than relying on the automatic include scan.
 
 ## Dependencies
 

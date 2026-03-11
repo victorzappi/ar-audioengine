@@ -10,7 +10,7 @@ http://bela.io
 C++ Real-Time Audio Programming with Bela - Lecture 8: Filters
 */
 
-#include <libraries/AudioFile/AudioFile.h>
+#include <AudioFile.h>
 #include "MonoFilePlayer.h"
 
 // Constructor taking the path of a file to load
