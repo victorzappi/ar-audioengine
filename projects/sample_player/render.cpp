@@ -27,10 +27,10 @@ int setup(struct audio_ctx *ctx, void *user_data)
 	if( !player.setup(filename, loop, autostart) ) 
 	{
     	printf("Error loading audio file '%s'\n", filename.c_str());
-    	return false;
+    	return 1;
 	}
 
-    return true;
+    return 0;
 }
 
 void render(struct audio_ctx *ctx, void *user_data)

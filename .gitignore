@@ -40,3 +40,6 @@ Thumbs.db
 # Temporary local projects
 _projects
 _projects/
+
+# Keep QNN headers out of git, since we're not allowed to distribute them
+dependencies/QNN/**

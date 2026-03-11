@@ -14,7 +14,7 @@ static const float freq = 440.0;
 static float phase = 0.0;
 static float phase_inc;
 
-int setup(struct audio_ctx *ctx, void *user_data) 
+int setup(struct audio_ctx *ctx, int argc, char **argv, void *user_data) 
 {
     phase_inc = 2.0f * M_PI * freq / (float)(ctx->sample_rate);
 

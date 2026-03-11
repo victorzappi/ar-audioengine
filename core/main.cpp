@@ -29,6 +29,7 @@ configure, build and clean commands in CMakeLists.txt
 #include <string.h>
 #include <pthread.h>
 #include <sched.h>
+#include <vector>
 
 #include "pcm_utils.h"
 #include "hw_mixer.h"
@@ -75,9 +76,8 @@ struct pcm_ctx {
     unsigned int num_samples;
     float *audio_buffer;
     char *raw_buffer;
+    void *userData;
 };
-
-
 
 void init_cmd(struct cmd *cmd)
 {
@@ -310,12 +310,10 @@ void print_usage(const char *argv0)
     fprintf(stderr, "-i | --instance <value>                The intance key value as a string or number (0 if not present)\n");
 }
 
-int main(int argc, char **argv)
+// Return 0 for success without exit, 1 for success with exit (e.g. printing help), -1 for failure
+static int parse_args(int *argc, char **argv, struct cmd *cmd)
 {
     int c;
-    struct cmd cmd;
-    struct pcm_ctx ctx;
-
     struct optparse opts;
     struct optparse_long long_options[] = {
         { "frontend-card",      'c', OPTPARSE_REQUIRED },
@@ -338,149 +336,210 @@ int main(int argc, char **argv)
         { 0, 0, OPTPARSE_NONE }
     };
 
-    printf("\nAudioReach Audioengine | project: %s\n\n", PROJECT_NAME);
-
-    init_cmd(&cmd);
+    // Store unrecognized options to be passed to project
+    std::vector<char*> unrecognizedArgs;
+    // Add the executable name to mimic running project with the same args
+    unrecognizedArgs.push_back(argv[0]);
 
     optparse_init(&opts, argv);
     while ((c = optparse_long(&opts, long_options, NULL)) != -1) {
         switch (c) {
         case 'c':
-            if (sscanf(opts.optarg, "%u", &cmd.virtual_card) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->virtual_card) != 1) {
                 fprintf(stderr, "failed parsing virtual card number '%s'\n", argv[1]);
-                return EXIT_FAILURE;
+                return -1;
             }
             break;
         case 'd':
-            if (sscanf(opts.optarg, "%u", &cmd.frontend_device) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->frontend_device) != 1) {
                 fprintf(stderr, "failed parsing frontend device number '%s'\n", argv[1]);
-                return EXIT_FAILURE;
+                return -1;
             }
-            if (snprintf(cmd.frontend_name, 7, "PCM%d", cmd.frontend_device) <= 0) {
+            if (snprintf(cmd->frontend_name, 7, "PCM%d", cmd->frontend_device) <= 0) {
                 fprintf(stderr, "failed parsing frontend device number '%s', must be 3 digits\n", argv[1]);
-                return EXIT_FAILURE;
+                return -1;
             }
             break;
         case 'B':
-            cmd.backend_name = strdup(opts.optarg);
-            if (cmd.backend_name == NULL) {
+            cmd->backend_name = strdup(opts.optarg);
+            if (cmd->backend_name == NULL) {
                 fprintf(stderr, "failed parsing backend name '%s'\n", argv[1]);
-                return EXIT_FAILURE;
+                return -1;
             }
             break;
         case 'C':
-            if (sscanf(opts.optarg, "%u", &cmd.physical_card) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->physical_card) != 1) {
                 fprintf(stderr, "failed parsing physical card number '%s'\n", argv[1]);
-                return EXIT_FAILURE;
+                return -1;
             }
             break;
         case 'D':
-            if (sscanf(opts.optarg, "%u", &cmd.physical_device) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->physical_device) != 1) {
                 fprintf(stderr, "failed parsing physical device number '%s'\n", argv[1]);
-                return EXIT_FAILURE;
+                return -1;
             }
             break;
         case 'p':
-            if (sscanf(opts.optarg, "%u", &cmd.config.period_size) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->config.period_size) != 1) {
                 fprintf(stderr, "failed parsing period size '%s'\n", argv[1]);
-                return EXIT_FAILURE;
+                return -1;
             }
             break;
         case 'q':
-            if (sscanf(opts.optarg, "%u", &cmd.config.period_count) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->config.period_count) != 1) {
                 fprintf(stderr, "failed parsing period count '%s'\n", argv[1]);
-                return EXIT_FAILURE;
+                return -1;
             }
             break;
         case 'n':
-            if (sscanf(opts.optarg, "%u", &cmd.config.channels) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->config.channels) != 1) {
                 fprintf(stderr, "failed parsing channel count '%s'\n", argv[1]);
-                return EXIT_FAILURE;
+                return -1;
             }
             break;
         case 'r':
-            if (sscanf(opts.optarg, "%u", &cmd.config.rate) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->config.rate) != 1) {
                 fprintf(stderr, "failed parsing rate '%s'\n", argv[1]);
-                return EXIT_FAILURE;
+                return -1;
             }
             break;
         case 'b':
-            if (sscanf(opts.optarg, "%u", &cmd.bits) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->bits) != 1) {
                 fprintf(stderr, "failed parsing bits per one sample '%s'\n", argv[1]);
-                return EXIT_FAILURE;
+                return -1;
             }
             break;
         case 'f':
-            cmd.is_float = true;
+            cmd->is_float = true;
             break;
         case 'x':
             /* Try to parse as number first */
-            if (sscanf(opts.optarg, "%u", &cmd.stream_kv.value) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->stream_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
-                cmd.stream_kv.value = get_streamrx_value(opts.optarg);
-                if (cmd.stream_kv.value == 0) {
+                cmd->stream_kv.value = get_streamrx_value(opts.optarg);
+                if (cmd->stream_kv.value == 0) {
                     fprintf(stderr, "failed parsing stream key value '%s' (not a valid number or stream name)\n", opts.optarg);
-                    return EXIT_FAILURE;
+                    return -1;
                 }
             }
             break;
         case 'y':
             /* Try to parse as number first */
-            if (sscanf(opts.optarg, "%u", &cmd.streampp_kv.value) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->streampp_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
-                cmd.streampp_kv.value = get_streampp_rx_value(opts.optarg);
-                if (cmd.streampp_kv.value == 0) {
+                cmd->streampp_kv.value = get_streampp_rx_value(opts.optarg);
+                if (cmd->streampp_kv.value == 0) {
                     fprintf(stderr, "failed parsing streampp key value '%s' (not a valid number or streampp name)\n", opts.optarg);
-                    return EXIT_FAILURE;
+                    return -1;
                 }
             }
             break;
         case 'w':
             /* Try to parse as number first */
-            if (sscanf(opts.optarg, "%u", &cmd.devicepp_kv.value) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->devicepp_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
-                cmd.devicepp_kv.value = get_device_pp_rx_value(opts.optarg);
-                if (cmd.devicepp_kv.value == 0) {
+                cmd->devicepp_kv.value = get_device_pp_rx_value(opts.optarg);
+                if (cmd->devicepp_kv.value == 0) {
                     fprintf(stderr, "failed parsing devicepp key value '%s' (not a valid number or devicepp name)\n", opts.optarg);
-                    return EXIT_FAILURE;
+                    return -1;
                 }
             }
             break;
         case 'z':
             /* Try to parse as number first */
-            if (sscanf(opts.optarg, "%u", &cmd.device_kv.value) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->device_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
-                cmd.device_kv.value = get_device_rx_value(opts.optarg);
-                if (cmd.device_kv.value == 0) {
+                cmd->device_kv.value = get_device_rx_value(opts.optarg);
+                if (cmd->device_kv.value == 0) {
                     fprintf(stderr, "failed parsing device key value '%s' (not a valid number or device name)\n", opts.optarg);
-                    return EXIT_FAILURE;
+                    return -1;
                 }
             }
             break;
         case 'i':
             /* Try to parse as number first */
-            if (sscanf(opts.optarg, "%u", &cmd.instance_kv.value) != 1) {
+            if (sscanf(opts.optarg, "%u", &cmd->instance_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
-                cmd.instance_kv.value = get_instance_value(opts.optarg);
-                if (cmd.instance_kv.value == 0) {
+                cmd->instance_kv.value = get_instance_value(opts.optarg);
+                if (cmd->instance_kv.value == 0) {
                     fprintf(stderr, "failed parsing instance key value '%s' (not a valid number or instance name)\n", opts.optarg);
-                    return EXIT_FAILURE;
+                    return -1;
                 }
             }
             break;
         case 'h':
             print_usage(argv[0]);
-            return EXIT_SUCCESS;
+            return 1;
         case '?':
-            fprintf(stderr, "%s\n", opts.errmsg);
-            return EXIT_FAILURE;
+            // Unrecognized option - save it
+            // opts.errmsg contains something like "invalid option -- 'x'" or the long option
+            // We need to capture the actual argument - it's at argv[opts.optind - 1]
+            unrecognizedArgs.push_back(argv[opts.optind - 1]);
+            // For unknown options, capture a following value immediately to keep pairs ordered.
+            // optparse does not set optarg for invalid options, so this would otherwise be appended
+            // later as a positional arg and lose option/value pairing.
+            if (opts.optarg) {
+                unrecognizedArgs.push_back(opts.optarg);
+            } else {
+                char *unknown = argv[opts.optind - 1];
+                char *next = argv[opts.optind];
+                if (unknown != NULL && next != NULL && next[0] != '-') {
+                    unrecognizedArgs.push_back(next);
+                    opts.optind++;
+                }
+            }
+            break;
         }
     }
 
-    if (cmd.backend_name == NULL) {
+    if (cmd->backend_name == NULL) {
         fprintf(stderr, "Missing required argument backend-name\n");
-        return EXIT_FAILURE;
+        return -1;
     }
+
+    // Collect remaining positional arguments (non-option args)
+	for (int i = opts.optind; i < *argc; i++)
+		unrecognizedArgs.push_back(argv[i]);
+
+	// Rebuild argv: ONLY unrecognized args
+	int newArgc = 0;
+	for (char* arg : unrecognizedArgs)
+		argv[newArgc++] = arg;
+
+	argv[newArgc] = NULL;
+	*argc = newArgc;
+
+	if (newArgc > 0) 
+	{
+		printf("Arguments not recognized by main parser: ");
+		for(int i = 0; i < newArgc; i++)
+			printf("%s%s", argv[i], (i < newArgc - 1) ? ", " : "\n");
+
+        printf("Passed as user data to application\n\n");
+	}
+
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    struct cmd cmd;
+    struct pcm_ctx ctx;
+    int parse_result;
+
+    printf("\nAudioReach Audioengine | project: %s\n\n", PROJECT_NAME);
+
+    init_cmd(&cmd);
+
+    parse_result = parse_args(&argc, argv, &cmd);
+    if (parse_result != 0) {
+        cleanup_cmd(&cmd);
+        return parse_result > 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    // userData can contain any data to be passed to the project
+    // By default, we just pass any unrecognized arguments
+    ctx.userData = argv;
 
     if (init_ctx(&ctx, &cmd) < 0) {
         cleanup_ctx(&ctx);
@@ -571,7 +630,7 @@ int audio_loop(struct pcm_ctx *ctx)
     }
 
     struct audio_ctx actx = create_audio_ctx(ctx);  // Must declare AND initialize together
-    if(setup(&actx, NULL) != 0) {
+    if(setup(&actx, ctx->userData) != 0) {
         fprintf(stderr, "setup function failed\n");
         cleanup(&actx, NULL);
         pcm_stop(ctx->pcm);

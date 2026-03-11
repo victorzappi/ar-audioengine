@@ -8,3 +8,13 @@ if(ADD_LIBSNDFILE)
     target_include_directories(AudioFile PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/AudioFile)
     target_link_libraries(libraries INTERFACE AudioFile)
 endif()
+
+if(ADD_QNN)
+    add_library(QnnModel STATIC
+        QNN/QnnModel.cpp
+        QNN/TensorTools.cpp
+    )
+    target_include_directories(QnnModel PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/QNN)
+    target_link_libraries(QnnModel PUBLIC dependencies)
+    target_link_libraries(libraries INTERFACE QnnModel)
+endif()
