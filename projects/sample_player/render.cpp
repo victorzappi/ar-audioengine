@@ -12,7 +12,7 @@
 #include <string>
 
 // drum loop has to have same samplerate as project!
-std::string filename = "629178__holizna__simple-lofi-vinyl-e-piano-loop-95-bpm_mono_48k.wav";
+std::string filename = "/root/ar-audioengine-sample-player/build/629178__holizna__simple-lofi-vinyl-e-piano-loop-95-bpm_mono_48k.wav";
 //-------------------------------------------
 
 MonoFilePlayer player;
@@ -29,6 +29,8 @@ int setup(struct audio_ctx *ctx, void *user_data)
     	printf("Error loading audio file '%s'\n", filename.c_str());
     	return false;
 	}
+
+	printf("setup successful\n");
 
     return true;
 }

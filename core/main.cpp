@@ -29,6 +29,7 @@ configure, build and clean commands in CMakeLists.txt
 #include <string.h>
 #include <pthread.h>
 #include <sched.h>
+#include <atomic> 
 
 #include "pcm_utils.h"
 #include "hw_mixer.h"
@@ -237,8 +238,8 @@ void cleanup_pcm(struct pcm *pcm)
     }
 }
 
-
-static int should_stop = 0;
+std::atomic_int should_stop(0);
+// static int should_stop = 0;
 
 int audio_loop(struct pcm_ctx *ctx);
 struct audio_ctx create_audio_ctx(struct pcm_ctx *ctx);
@@ -248,11 +249,18 @@ void byteSplit_littleEndian(struct pcm_ctx *ctx, unsigned char* sampleBytes, int
 void byteSplit_bigEndian(struct pcm_ctx *ctx, unsigned char *sampleBytes, int value);
 
 
-void stream_close(int sig)
+void sig_handler(int sig)
 {
     /* allow the stream to be closed gracefully */
     signal(sig, SIG_IGN);
-    should_stop = 1;
+    //should_stop = 1;
+    stream_close();
+
+}
+
+void stream_close()
+{
+    should_stop.store(1);
 }
 
 static void *audio_thread_func(void *arg)
@@ -571,7 +579,9 @@ int audio_loop(struct pcm_ctx *ctx)
     }
 
     struct audio_ctx actx = create_audio_ctx(ctx);  // Must declare AND initialize together
-    if(setup(&actx, NULL) != 0) {
+    int status_code = setup(&actx, NULL);
+    printf("Status code of setup: %d\n", status_code);
+    if(status_code == 0) {
         fprintf(stderr, "setup function failed\n");
         cleanup(&actx, NULL);
         pcm_stop(ctx->pcm);
@@ -579,11 +589,11 @@ int audio_loop(struct pcm_ctx *ctx)
     }
 
     // catch ctrl-c to shutdown cleanly
-    signal(SIGINT, stream_close);
+    signal(SIGINT, sig_handler);
 
     //------------------------
     // actual audio loop
-    while(!should_stop) {
+    while(!should_stop.load()) {
         render(&actx, NULL);
         
         if (!ctx->is_float) {

@@ -10,7 +10,7 @@ http://bela.io
 C++ Real-Time Audio Programming with Bela - Lecture 8: Filters
 */
 
-#include <libraries/AudioFile/AudioFile.h>
+#include "AudioFile.h"
 #include "MonoFilePlayer.h"
 
 // Constructor taking the path of a file to load
@@ -27,14 +27,16 @@ bool MonoFilePlayer::setup(const std::string& filename, bool loop, bool autostar
 	loop_ = loop;
 	
 	// Load the file
+	printf("Preparing to load audio file...\n");
 	sampleBuffer_ = AudioFileUtilities::loadMono(filename);
 	
 	// Check for error
 	if(sampleBuffer_.empty()) {
+		printf("Error loading audio file\n");
 		isPlaying_ = false;
     	return false;
 	}
-	
+	printf("load audio file successful\n");
 	return true;
 }
 

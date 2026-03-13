@@ -9,11 +9,15 @@ message(STATUS "Configuring dependencies:")
 set(VARIABLE_NAMES 
     "ADD_LIBSNDFILE"
     "ADD_RTNEURAL" 
+    "ADD_ONNXRUNTIME"
+    "ADD_NAM"
 )
 
 set(SEARCH_STRINGS
     "sndfile.h\;AudioFile.h"
-    "RTNeural/RTNeural.h\;rtneural" 
+    "RTNeural/RTNeural.h\;rtneural"
+    "OrtModel.h\;OrtModel"
+    "NAM/get_dsp.h\;NeuralAmpModelerCore"
 )
 
 foreach(VAR_NAME IN LISTS VARIABLE_NAMES)
@@ -66,5 +70,55 @@ if (ADD_RTNEURAL)
     # target_include_directories()
     # because its CMakelists.txt file propagates them to any target linking against the lib with:
     target_link_libraries(dependencies INTERFACE RTNeural)
+endif()
+#-------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------
+# ONNXRUNTIME (pre-built shared library)
+#-------------------------------------------------------------------------
+if (ADD_ONNXRUNTIME)
+    message("")
+    message(STATUS "Configuring onnxruntime...")
+    add_library(onnxruntime SHARED  IMPORTED)
+    set_target_properties(onnxruntime PROPERTIES
+        IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime/ort_output/lib/libonnxruntime.so"
+        IMPORTED_NO_SONAME TRUE
+    )
+    target_include_directories(dependencies INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime/ort_output/include
+    )
+    target_link_libraries(dependencies INTERFACE onnxruntime)
+endif()
+#-------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------
+# NeuralAmpModelerCore
+#-------------------------------------------------------------------------
+if(ADD_NAM)
+    # NeuralAmpModelerCore does not provide its own library CMake target,
+    # so we build it as a static library from source here
+    message(STATUS "\tConfiguring NeuralAmpModelerCore...")
+    set(NAM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/NeuralAmpModelerCore)
+    file(GLOB NAM_SOURCES ${NAM_DIR}/NAM/*.cpp)
+    file(GLOB NAM_HEADERS ${NAM_DIR}/NAM/*.h)
+    add_library(NeuralAmpModelerCore STATIC ${NAM_SOURCES} ${NAM_HEADERS})
+    target_include_directories(NeuralAmpModelerCore PUBLIC
+        ${NAM_DIR}
+        ${NAM_DIR}/Dependencies/eigen
+        ${NAM_DIR}/Dependencies/nlohmann
+    )
+    target_include_directories(dependencies INTERFACE
+        ${NAM_DIR}
+        ${NAM_DIR}/Dependencies/eigen
+        ${NAM_DIR}/Dependencies/nlohmann
+    )
+    # NeuralAmpModelerCore uses static self-registration to register model parsers
+    # (WaveNet, LSTM, ConvNet) at startup. Without --whole-archive, the linker
+    # strips these registration objects because nothing directly references them,
+    # causing "No config parser registered for architecture" at runtime.
+    # --no-whole-archive restores default linking for all libraries that follow,
+    # so only NeuralAmpModelerCore is affected.
+    target_link_libraries(dependencies INTERFACE
+            -Wl,--whole-archive NeuralAmpModelerCore -Wl,--no-whole-archive)
 endif()
 #-------------------------------------------------------------------------
