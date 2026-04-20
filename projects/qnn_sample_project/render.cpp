@@ -209,9 +209,15 @@ int setup(struct audio_ctx *ctx, void *user_data)
 {
     // Initialize the QNN logger - this lets us use the `QNN_INFO/WARN/ERROR` macros
     // This logger will also be used in the QNN backend.
-    if (!qnn::log::initializeLogging(logLevel))
+    if (!qnn::log::initializeLogging())
     {
         std::cerr << "ERROR: Unable to initialize logging!\n";
+        return EXIT_FAILURE;
+    }
+
+    if (!qnn::log::setLogLevel(logLevel))
+    {
+        std::cerr << "ERROR: invalid log level given";
         return EXIT_FAILURE;
     }
 
