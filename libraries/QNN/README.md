@@ -9,13 +9,13 @@ To use the `QnnModel`, you first need some files from the QNN SDK.
 > You do *not* need to run any setup steps to use the SDK! However, this documentation will reference a $QNN_SDK_ROOT variable, which refers to `<download location>/qairt/<qairt version>` in the SDK (e.g. `~/qairt/2.42.0.251225`)
 2. Copy the QNN SDK headers from `$QNN_SDK_ROOT/include/QNN` into `dependencies/QNN/include`.
 > 
-3. Copy the QNN sample app utility files from `$QNN_SDK_ROOT/examples/QNN/SampleApp/SampleApp/src/`, excluding `main.cpp`.
+3. Copy the QNN sample app utility files from `$QNN_SDK_ROOT/examples/QNN/SampleApp/SampleApp/src/`, excluding `main.cpp`, `CMakeLists.txt`, and `QnnSampleApp.c/hpp`.
 
 On Linux systems, you can run these commands to complete the setup:
 ```
 mkdir dependencies/QNN/include dependencies/QNN/tools
-cp -r $QNN_SDK_ROOT/include/QNN dependencies/QNN/include
-rsync -a --exclude='main.cpp' $QNN_SDK_ROOT/examples/QNN/SampleApp/SampleApp/src/ dependencies/QNN2/tools/
+cp -r $QNN_SDK_ROOT/include/QNN/* dependencies/QNN/include
+rsync -a --exclude='main.cpp' --exclude='CMakeLists.txt' --exclude='QnnSampleApp.*' $QNN_SDK_ROOT/examples/QNN/SampleApp/SampleApp/src/ dependencies/QNN/tools/
 ```
 
 ## Typical flow
