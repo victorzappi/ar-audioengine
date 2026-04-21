@@ -42,4 +42,7 @@ _projects
 _projects/
 
 # Keep QNN headers out of git, since we're not allowed to distribute them
-dependencies/QNN/**
+dependencies/QNN/include/**
+dependencies/QNN/tools/**
+# !dependencies/QNN/include
+# !dependencies/QNN/tools

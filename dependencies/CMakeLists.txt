@@ -12,12 +12,6 @@ set(VARIABLE_NAMES
     "ADD_QNN"
 )
 
-set(KNOWN_DEPENDENCIES
-    "LIBSNDFILE"
-    "RTNEURAL"
-    "QNN"
-)
-
 set(SEARCH_STRINGS
     "sndfile.h\;AudioFile.h"
     "RTNeural/RTNeural.h\;rtneural" 
