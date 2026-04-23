@@ -580,8 +580,7 @@ int audio_loop(struct pcm_ctx *ctx)
 
     struct audio_ctx actx = create_audio_ctx(ctx);  // Must declare AND initialize together
     int status_code = setup(&actx, NULL);
-    printf("Status code of setup: %d\n", status_code);
-    if(status_code == 0) {
+    if(status_code != 0) {
         fprintf(stderr, "setup function failed\n");
         cleanup(&actx, NULL);
         pcm_stop(ctx->pcm);

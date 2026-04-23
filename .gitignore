@@ -3,6 +3,7 @@
 
 # Compiled Object files
 *.so
+!libonnxruntime.so
 *.slo
 *.lo
 *.o
@@ -25,6 +26,7 @@ obj/
 
 # Editor
 .vscode/
+.claude/
 *.swp
 *~
 
@@ -40,3 +42,6 @@ Thumbs.db
 # Temporary local projects
 _projects
 _projects/
+
+# neural models that need author's permission
+*.nam

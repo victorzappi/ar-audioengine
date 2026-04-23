@@ -14,7 +14,7 @@
 #   -DCMAKE_BUILD_TYPE=Debug
 #
 #_Build [bin in build]
-# cmake --buld build
+# cmake --build build
 #
 # _Clean 
 # cmake --build build --target clean

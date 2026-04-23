@@ -30,8 +30,8 @@ void render(struct audio_ctx *ctx, void *user_data)
         while(phase > 2.0f * M_PI)
 			phase -= 2.0f * M_PI;
 
-        for (unsigned int c=0; c<ctx->channels; c++)
-            ctx->audio_buffer[n*ctx->channels + c] = sample;
+        for (unsigned int chn=0; chn<ctx->channels; chn++)
+            ctx->audio_buffer[n*ctx->channels + chn] = sample;
     }
 }
 

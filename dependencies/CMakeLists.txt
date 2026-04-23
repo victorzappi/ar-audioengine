@@ -52,7 +52,7 @@ endif()
 
 
 #-------------------------------------------------------------------------
-# RTNeural
+# RTNEURAL
 #-------------------------------------------------------------------------
 if (ADD_RTNEURAL)
     message("")
@@ -78,7 +78,7 @@ endif()
 #-------------------------------------------------------------------------
 if (ADD_ONNXRUNTIME)
     message("")
-    message(STATUS "Configuring onnxruntime...")
+    message(STATUS "Configuring ONNX Runtime...")
     add_library(onnxruntime SHARED  IMPORTED)
     set_target_properties(onnxruntime PROPERTIES
         IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime/ort_output/lib/libonnxruntime.so"
@@ -99,10 +99,10 @@ if(ADD_NAM)
     # so we build it as a static library from source here
     message(STATUS "\tConfiguring NeuralAmpModelerCore...")
     set(NAM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/NeuralAmpModelerCore)
-    file(GLOB NAM_SOURCES ${NAM_DIR}/NAM/*.cpp)
-    file(GLOB NAM_HEADERS ${NAM_DIR}/NAM/*.h)
-    add_library(NeuralAmpModelerCore STATIC ${NAM_SOURCES} ${NAM_HEADERS})
-    target_include_directories(NeuralAmpModelerCore PUBLIC
+    file(GLOB_RECURSE NAM_SOURCES ${NAM_DIR}/NAM/*.cpp)
+    file(GLOB_RECURSE NAM_HEADERS ${NAM_DIR}/NAM/*.h)
+    add_library(NAM STATIC ${NAM_SOURCES} ${NAM_HEADERS})
+    target_include_directories(NAM PUBLIC
         ${NAM_DIR}
         ${NAM_DIR}/Dependencies/eigen
         ${NAM_DIR}/Dependencies/nlohmann
@@ -119,6 +119,6 @@ if(ADD_NAM)
     # --no-whole-archive restores default linking for all libraries that follow,
     # so only NeuralAmpModelerCore is affected.
     target_link_libraries(dependencies INTERFACE
-            -Wl,--whole-archive NeuralAmpModelerCore -Wl,--no-whole-archive)
+            -Wl,--whole-archive NAM -Wl,--no-whole-archive)
 endif()
 #-------------------------------------------------------------------------
