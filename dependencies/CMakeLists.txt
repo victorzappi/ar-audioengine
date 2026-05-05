@@ -32,9 +32,9 @@ endif()
 
 #-------------------------------------------------------------------------
 # LIBSNDFILE
-# Configuration for libsndfile's provided CMakeLists.txt
 #-------------------------------------------------------------------------
 if (ADD_LIBSNDFILE)
+    # Configuration for libsndfile's provided CMakeLists.txt
     message("")
     message(STATUS "Configuring Libsndfile...")
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
@@ -55,6 +55,7 @@ endif()
 # RTNEURAL
 #-------------------------------------------------------------------------
 if (ADD_RTNEURAL)
+    # Configuration for libsndfile's provided CMakeLists.txt
     message("")
     message(STATUS "Configuring RTNeural...")
     # Set the CPM source cache to a custom directory within the build directory and create the dir
@@ -74,25 +75,24 @@ endif()
 #-------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------
-# ONNXRUNTIME (pre-built shared library)
+# ONNXRUNTIME
 #-------------------------------------------------------------------------
 if (ADD_ONNXRUNTIME)
+    # Pre-built shared library
     message("")
     message(STATUS "Configuring ONNX Runtime...")
-    add_library(onnxruntime SHARED  IMPORTED)
-    set_target_properties(onnxruntime PROPERTIES
-        IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime/ort_output/lib/libonnxruntime.so"
-        IMPORTED_NO_SONAME TRUE
-    )
+    set(ORT_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime/ort_output/lib")
     target_include_directories(dependencies INTERFACE
         ${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime/ort_output/include
     )
-    target_link_libraries(dependencies INTERFACE onnxruntime)
+    target_link_libraries(dependencies INTERFACE
+        -L${ORT_LIB_DIR} -l:libonnxruntime.so.1.22.0
+    )
 endif()
 #-------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------
-# NeuralAmpModelerCore
+# NAM
 #-------------------------------------------------------------------------
 if(ADD_NAM)
     # NeuralAmpModelerCore does not provide its own library CMake target,
