@@ -14,7 +14,7 @@
 #   -DCMAKE_BUILD_TYPE=Debug
 #
 #_Build [bin in build]
-# cmake --buld build
+# cmake --build build
 #
 # _Clean 
 # cmake --build build --target clean
@@ -37,6 +37,7 @@
 
 cmake_minimum_required(VERSION 3.10)
 
+project(ar_audioengine LANGUAGES CXX)
 
 message(STATUS "=== Configuring ar_audioengine ===")
 
@@ -52,9 +53,6 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 #-------------------------------------------------------------------------
 
 
-project(ar_audioengine LANGUAGES CXX)
-
-
 #-------------------------------------------------------------------------
 # sources
 #-------------------------------------------------------------------------
@@ -64,6 +62,7 @@ set(CORE_SRCS
     core/hw_mixer.cpp
     core/agm_mixer.cpp
 )
+
 # pass project path as either relative to source dir or absolute
 if(PROJECT_PATH)
     # Resolve relative paths against the source directory
@@ -96,6 +95,7 @@ target_include_directories(ar_audioengine PRIVATE
     ${CMAKE_SYSROOT}/usr/include/acdbdata
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+
 if(PROJECT_PATH)
     target_include_directories(ar_audioengine PRIVATE ${PROJECT_PATH})
 endif()
@@ -134,15 +134,34 @@ message(STATUS "Backend conf: ${BACKEND_CONF_FILE}")
 
 
 #-------------------------------------------------------------------------
-# options and libs
+# options
 #-------------------------------------------------------------------------
 target_compile_options(ar_audioengine PRIVATE -Wall -fdiagnostics-color=always)
+
+# Remove unused functions and data from final binary
+add_compile_options(-ffunction-sections -fdata-sections)
+add_link_options(-Wl,--gc-sections)
+
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(ar_audioengine PRIVATE -O0 -g)
 else()
     target_compile_options(ar_audioengine PRIVATE -O2)
 endif()
-
-target_link_libraries(ar_audioengine PRIVATE tinyalsa expat pthread)
 #-------------------------------------------------------------------------
+
+
+#-------------------------------------------------------------------------
+# dependencies and libraries
+#-------------------------------------------------------------------------
+add_subdirectory(dependencies)
+add_subdirectory(libraries)
+
+target_link_libraries(ar_audioengine 
+    PRIVATE dependencies
+    PRIVATE libraries
+    PRIVATE tinyalsa expat pthread
+)
+#-------------------------------------------------------------------------
+
+

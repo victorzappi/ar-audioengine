@@ -1,9 +1,14 @@
+/*
+ * Copyright 2026 Victor Zappi
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
+ */
+
+
 #include <math.h>
 #include "render.h"
 
-
 static const float amp = 0.5;
-static const float freq = 330.0;
+static const float freq = 440.0;
 
 static float phase = 0.0;
 static float phase_inc;
@@ -25,8 +30,8 @@ void render(struct audio_ctx *ctx, void *user_data)
         while(phase > 2.0f * M_PI)
 			phase -= 2.0f * M_PI;
 
-        for (unsigned int c=0; c<ctx->channels; c++)
-            ctx->audio_buffer[n*ctx->channels + c] = sample;
+        for (unsigned int chn=0; chn<ctx->channels; chn++)
+            ctx->audio_buffer[n*ctx->channels + chn] = sample;
     }
 }
 
@@ -35,3 +40,4 @@ void cleanup(struct audio_ctx *ctx, void *user_data)
 {
     return;
 }
+

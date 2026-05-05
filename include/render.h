@@ -12,3 +12,5 @@ int setup(struct audio_ctx *ctx, void *user_data);
 void render(struct audio_ctx *ctx, void *user_data);
 
 void cleanup(struct audio_ctx *ctx, void *user_data);
+
+void stream_close();
