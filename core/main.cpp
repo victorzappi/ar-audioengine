@@ -45,8 +45,8 @@ const char* hw_mixer_path = "speaker";
 
 struct cmd {
     unsigned int virtual_card;
-    unsigned int frontend_device;
-    char frontend_name[7];
+    unsigned int virtual_device;
+    char *frontend_name;
     char *backend_name;
     unsigned int physical_card;
     unsigned int physical_device;
@@ -83,13 +83,13 @@ struct pcm_ctx {
 void init_cmd(struct cmd *cmd)
 {
     cmd->virtual_card = 100;
-    cmd->frontend_device = 100;
-    snprintf(cmd->frontend_name, 7, "PCM%d", cmd->frontend_device);
-    cmd->backend_name = strdup("CODEC_DMA-LPAIF_WSA-RX-0");
+    cmd->virtual_device = 100;
+    cmd->frontend_name = nullptr;
+    cmd->backend_name = nullptr;
     cmd->physical_card = 0;
     cmd->physical_device = 0;
 
-    cmd->frame_size_fcr = 10; //VIC for now not used, because it breaks multi stream with more instances in parallel
+    cmd->frame_size_fcr = 1;
 
     cmd->flags = PCM_OUT;
     cmd->config.period_size = 960;
@@ -190,19 +190,19 @@ static int init_pcm(struct pcm_ctx* ctx, struct cmd *cmd)
 
     /* open pcm */
     ctx->pcm = pcm_open(cmd->virtual_card,
-                        cmd->frontend_device,
+                        cmd->virtual_device,
                         cmd->flags,
                         &cmd->config);
     
     if (!ctx->pcm) {
         fprintf(stderr, "failed to open frontend pcm %u,%u\n",
-                cmd->virtual_card, cmd->frontend_device);
+                cmd->virtual_card, cmd->virtual_device);
         return -1;
     }
     
     if (!ctx->pcm || !pcm_is_ready(ctx->pcm)) {
         fprintf(stderr, "failed to open for pcm %u,%u. %s\n",
-                cmd->virtual_card, cmd->frontend_device,
+                cmd->virtual_card, cmd->virtual_device,
                 pcm_get_error(ctx->pcm));
         pcm_close(ctx->pcm);
         return -1;
@@ -211,8 +211,10 @@ static int init_pcm(struct pcm_ctx* ctx, struct cmd *cmd)
     return 0;
 }
 
-void cleanup_cmd(struct cmd *cmd) 
+void cleanup_cmd(struct cmd *cmd)
 {
+    if (cmd->frontend_name != NULL)
+        free(cmd->frontend_name);
     if (cmd->backend_name != NULL)
         free(cmd->backend_name);
 }
@@ -296,15 +298,109 @@ int start_audio(struct pcm_ctx *ctx)
     return 0;
 }
 
+static int set_frontend_name(const char *xml_path,
+                              unsigned int virtual_card, unsigned int virtual_device,
+                              char **name_out)
+{
+    FILE *f = fopen(xml_path, "r");
+    if (!f) {
+        fprintf(stderr, "Failed to open %s\n", xml_path);
+        return -1;
+    }
+
+    char line[256], tmp[256];
+    unsigned int id_val;
+    int card_ok = 0, dev_id_ok = 0;
+    int ret = -1;
+    enum { OUTSIDE, IN_CARD, IN_DEV } scope = OUTSIDE;
+
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+
+        switch (scope) {
+        case OUTSIDE:
+            if (strncmp(p, "<card>", 6) == 0)
+                scope = IN_CARD;
+            break;
+        case IN_CARD:
+            if (strncmp(p, "</card>", 7) == 0) {
+                scope = OUTSIDE;
+                card_ok = 0;
+            } else if (card_ok && strncmp(p, "<pcm-device>", 12) == 0) {
+                scope = IN_DEV;
+                dev_id_ok = 0;
+            } else if (sscanf(p, "<id>%u</id>", &id_val) == 1) {
+                card_ok = (id_val == virtual_card);
+            }
+            break;
+        case IN_DEV:
+            if (strncmp(p, "</pcm-device>", 13) == 0) {
+                scope = IN_CARD;
+                dev_id_ok = 0;
+            } else if (sscanf(p, "<id>%u</id>", &id_val) == 1) {
+                dev_id_ok = (id_val == virtual_device);
+            } else if (dev_id_ok && sscanf(p, "<name>%255[^<]</name>", tmp) == 1) {
+                *name_out = strdup(tmp);
+                ret = (*name_out != NULL) ? 0 : -1;
+                if (ret == 0)
+                    printf("virtual card: %u, device: %u -> frontend: %s\n\n",
+                           virtual_card, virtual_device, *name_out);
+                goto done;
+            }
+            break;
+        }
+    }
+
+done:
+    fclose(f);
+    return ret;
+}
+
+static int set_backend_name(unsigned int physical_card, unsigned int physical_device,
+                             char **backend_name_out)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/asound/card%u/pcm%up/info", physical_card, physical_device);
+
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        fprintf(stderr, "Failed to open %s\n", path);
+        return -1;
+    }
+
+    char line[256];
+    int ret = -1;
+
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "id:", 3) == 0) {
+            char *p = line + 3;
+            while (*p == ' ') p++;
+            char name[128];
+            if (sscanf(p, "%127s", name) == 1) {
+                *backend_name_out = strdup(name);
+                ret = (*backend_name_out != NULL) ? 0 : -1;
+                if (ret == 0)
+                    printf("physical card: %u, device: %u -> backend: %s\n\n",
+                           physical_card, physical_device, *backend_name_out);
+            }
+            break;
+        }
+    }
+
+    fclose(f);
+    return ret;
+}
+
 void print_usage(const char *argv0)
 {
     fprintf(stderr, "usage: %s [options]\n", argv0);
     fprintf(stderr, "options:\n");
-    fprintf(stderr, "-c | --virtual-card <card num>         The virtual card number that contains frontend and backend devices\n");
-    fprintf(stderr, "-d | --frontend-device <device num>    The frontend device number\n");
-    fprintf(stderr, "-B | --backend-name <name>             The backend device name\n");
-    fprintf(stderr, "-C | --physical-card <card num>        The physical card number (Alsa Sink card)\n");
-    fprintf(stderr, "-D | --physical-device <device num>    The physical device number (Alsa Sink device)\n");
+    fprintf(stderr, "-c | --virtual-card <card num>         The virtual card number that contains the frontend device\n");
+    fprintf(stderr, "-d | --virtual-device <device num>     The virtual device number that represents the frontend\n");
+    fprintf(stderr, "-C | --physical-card <card num>        The physical card number that contains the backend device\n");
+    fprintf(stderr, "-D | --physical-device <device num>    The physical device number that represents the backend\n");
+    fprintf(stderr, "-B | --backend-name <name>             The backend device name (parsed automatically if not set)\n");
     fprintf(stderr, "-p | --period-size <size>              The size of the frontend PCM period\n");
     fprintf(stderr, "-q | --period-count <count>            The number of frontend PCM periods\n");
     fprintf(stderr, "-n | --channels <count>                The number of channels\n");
@@ -326,11 +422,11 @@ int main(int argc, char **argv)
 
     struct optparse opts;
     struct optparse_long long_options[] = {
-        { "frontend-card",      'c', OPTPARSE_REQUIRED },
-        { "frontend-device",    'd', OPTPARSE_REQUIRED },
+        { "virtual-card",       'c', OPTPARSE_REQUIRED },
+        { "virtual-device",     'd', OPTPARSE_REQUIRED },
+        { "physical-card",      'C', OPTPARSE_REQUIRED },
+        { "physical-device",    'D', OPTPARSE_REQUIRED },
         { "backend-name",       'B', OPTPARSE_REQUIRED },
-        { "backend-card",       'C', OPTPARSE_REQUIRED },
-        { "backend-device",     'D', OPTPARSE_REQUIRED },
         { "period-size",        'p', OPTPARSE_REQUIRED },
         { "period-count",       'q', OPTPARSE_REQUIRED },
         { "channels",           'n', OPTPARSE_REQUIRED },
@@ -360,12 +456,8 @@ int main(int argc, char **argv)
             }
             break;
         case 'd':
-            if (sscanf(opts.optarg, "%u", &cmd.frontend_device) != 1) {
-                fprintf(stderr, "failed parsing frontend device number '%s'\n", argv[1]);
-                return EXIT_FAILURE;
-            }
-            if (snprintf(cmd.frontend_name, 7, "PCM%d", cmd.frontend_device) <= 0) {
-                fprintf(stderr, "failed parsing frontend device number '%s', must be 3 digits\n", argv[1]);
+            if (sscanf(opts.optarg, "%u", &cmd.virtual_device) != 1) {
+                fprintf(stderr, "failed parsing virtual device number '%s'\n", argv[1]);
                 return EXIT_FAILURE;
             }
             break;
@@ -485,9 +577,21 @@ int main(int argc, char **argv)
         }
     }
 
-    if (cmd.backend_name == NULL) {
-        fprintf(stderr, "Missing required argument backend-name\n");
+    if (set_frontend_name("/etc/card-defs.xml", cmd.virtual_card, cmd.virtual_device,
+                          &cmd.frontend_name) != 0) {
+        fprintf(stderr, "Frontend not found for virtual card %u device %u in /etc/card-defs.xml\n",
+                cmd.virtual_card, cmd.virtual_device);
+        cleanup_cmd(&cmd);
         return EXIT_FAILURE;
+    }
+
+    if (cmd.backend_name == NULL) {
+        if (set_backend_name(cmd.physical_card, cmd.physical_device, &cmd.backend_name) != 0) {
+            fprintf(stderr, "Backend not found for physical card %u device %u\n",
+                    cmd.physical_card, cmd.physical_device);
+            cleanup_cmd(&cmd);
+            return EXIT_FAILURE;
+        }
     }
 
     if (init_ctx(&ctx, &cmd) < 0) {
@@ -519,7 +623,7 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    if (configure_agm(cmd.physical_card, cmd.physical_device, cmd.config.period_count, 
+    if (configure_agm_modules(cmd.physical_card, cmd.physical_device, cmd.config.period_count, 
         cmd.frame_size_fcr) < 0) {
         cleanup_agm();
         cleanup_hw_mixer();

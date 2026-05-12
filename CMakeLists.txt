@@ -39,6 +39,12 @@ cmake_minimum_required(VERSION 3.10)
 
 project(ar_audioengine LANGUAGES CXX)
 
+# Creates compile_commands.json in the build directory so IDEs (VSCode/VSCodium
+# with the C/C++ extension) can resolve include paths and -D defines exactly
+# as CMake passes them to the compiler. Has no effect on the build itself
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+
 message(STATUS "=== Configuring ar_audioengine ===")
 
 

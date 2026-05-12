@@ -741,7 +741,8 @@ int set_agm_backend_config(struct mixer *mixer, char *backend_name, struct devic
     return ret;
 }
 
-int get_agm_module_iid(struct mixer *mixer, char *frontend_name, char *backend_name, int tag_id, uint32_t *miid)
+int get_agm_module_iid(struct mixer *mixer, char *frontend_name, char *backend_name, int tag_id, 
+                       uint32_t *miid, uint32_t *mid)
 {
     printf("---get_agm_module_iid, searching for tag 0x%X (%s)\n", tag_id, get_tag_name(tag_id));
 
@@ -806,6 +807,7 @@ int get_agm_module_iid(struct mixer *mixer, char *frontend_name, char *backend_n
             if (tag_entry->num_modules) {
                 printf("---\t\t\ttag_entry[%d].num_modules: %d\n", i, tag_entry->num_modules);
                  mod_info_entry = &tag_entry->module_entry[0];
+                 *mid = mod_info_entry->module_id;
                  *miid = mod_info_entry->module_iid;
                  printf("---\t\t\ttag_entry[%d].module_entry[0].id: 0x%X\n", i, mod_info_entry->module_id);
                  printf("---\t\t\ttag_entry[%d].module_entry[0].iid: 0x%X\n", i, mod_info_entry->module_iid);
@@ -1039,6 +1041,99 @@ int configure_agm_mfc(struct mixer *mixer, char *frontend_name, unsigned int rat
     return ret;
 }
 
+int configure_agm_dma_sink(struct mixer *mixer, char *frontend_name, unsigned int card_id, unsigned int device_id, 
+                           unsigned int frame_size_fcr, uint32_t miid)
+{
+    printf("---configure_agm_alsa_sink\n");
+
+    int ret = 0;
+    struct apm_module_param_data_t* header = NULL;
+    // struct param_id_alsa_device_intf_cfg_t *alsaSink_devIntfCfg;
+    struct param_id_hw_ep_frame_size_factor_t *dmaSink_frmSizeFcr;
+    uint8_t* payload = NULL;
+    size_t payloadSize = 0, padBytes = 0, paramSize, paddedSize;
+
+
+    /* set PARAM_ID_ALSA_DEVICE_INTF_CFG */
+
+    // Create payload container
+    // paramSize =  sizeof(struct param_id_alsa_device_intf_cfg_t);
+    // payload = create_agm_param_payload(paramSize, &payloadSize, &padBytes);
+    // if (!payload) {
+    //     return -ENOMEM;
+    // }
+
+    // // Fill header
+    // header = (struct apm_module_param_data_t*)payload;
+    // header->module_instance_id = miid;
+    // header->param_id = PARAM_ID_ALSA_DEVICE_INTF_CFG;
+    // header->error_code = 0x0;
+    // header->param_size = paramSize;
+
+    // // Fill actual param's components
+    // alsaSink_devIntfCfg = (struct param_id_alsa_device_intf_cfg_t*)(payload +
+    //            sizeof(struct apm_module_param_data_t));
+    // alsaSink_devIntfCfg->card_id = card_id;
+    // alsaSink_devIntfCfg->device_id = device_id;
+    // alsaSink_devIntfCfg->period_count = period_cnt;
+    // alsaSink_devIntfCfg->start_threshold = 0;    // auto
+    // alsaSink_devIntfCfg->stop_threshold = 0;     // auto
+    // alsaSink_devIntfCfg->silence_threshold = 0;  // auto
+    
+    // paddedSize = payloadSize + padBytes;
+
+    // printf("---\tpayload:\n");
+    // printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
+    // printf("---\t\theader->param_id: 0x%X (PARAM_ID_ALSA_DEVICE_INTF_CFG)\n", header->param_id);
+    // printf("---\t\talsaSink_devIntfCfg->card_id: %d\n", card_id);
+    // printf("---\t\talsaSink_devIntfCfg->device_id: %d\n", device_id);
+    // printf("---\t\talsaSink_devIntfCfg->period_count: %d\n", period_cnt);
+    // printf("---\t\talsaSink_devIntfCfg->start_threshold: %d\n", 0);
+    // printf("---\t\talsaSink_devIntfCfg->stop_threshold: %d\n", 0);
+    // printf("---\t\talsaSink_devIntfCfg->silence_threshold: %d\n", 0);
+
+    // ret = set_agm_param(mixer, frontend_name, (void *)payload, paddedSize);
+
+    // free(payload);
+
+    // if (ret != 0) {
+    //     return ret;  // Exit early if first param fails
+    // }
+
+
+    /* set PARAM_ID_HW_EP_FRAME_SIZE_FACTOR */
+    
+    paramSize = sizeof(struct param_id_hw_ep_frame_size_factor_t);
+    payload = create_agm_param_payload(paramSize, &payloadSize, &padBytes);
+    if (!payload) {
+        return -ENOMEM;
+    }
+
+    // Fill header
+    header = (struct apm_module_param_data_t*)payload;
+    header->module_instance_id = miid;
+    header->param_id = PARAM_ID_HW_EP_FRAME_SIZE_FACTOR;
+    header->error_code = 0x0;
+    header->param_size = paramSize;
+
+    dmaSink_frmSizeFcr = (struct param_id_hw_ep_frame_size_factor_t*)(payload +
+               sizeof(struct apm_module_param_data_t));
+    dmaSink_frmSizeFcr->frame_size_factor = frame_size_fcr;
+    
+    paddedSize = payloadSize + padBytes;
+
+    printf("---\tpayload:\n");
+    printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
+    printf("---\t\theader->param_id: 0x%X (PARAM_ID_HW_EP_FRAME_SIZE_FACTOR)\n", header->param_id);
+    printf("---\t\tdmaSink_frmSizeFcr->frame_size_factor: %d\n", frame_size_fcr);
+
+    ret = set_agm_param(mixer, frontend_name, (void *)payload, paddedSize);
+
+    free(payload);
+
+    return ret;
+}
+
 int configure_agm_alsa_sink(struct mixer *mixer, char *frontend_name, unsigned int card_id, unsigned int device_id, 
                             unsigned int period_cnt, unsigned int frame_size_fcr, uint32_t miid)
 {
@@ -1047,7 +1142,7 @@ int configure_agm_alsa_sink(struct mixer *mixer, char *frontend_name, unsigned i
     int ret = 0;
     struct apm_module_param_data_t* header = NULL;
     struct param_id_alsa_device_intf_cfg_t *alsaSink_devIntfCfg;
-    // struct param_id_hw_ep_frame_size_factor_t *alsaSink_frmSizeFcr;
+    struct param_id_hw_ep_frame_size_factor_t *alsaSink_frmSizeFcr;
     uint8_t* payload = NULL;
     size_t payloadSize = 0, padBytes = 0, paramSize, paddedSize;
 
@@ -1098,35 +1193,36 @@ int configure_agm_alsa_sink(struct mixer *mixer, char *frontend_name, unsigned i
         return ret;  // Exit early if first param fails
     }
 
-    //VIC this can be done only once [before pcm_start()?], so if this is done multi stream use cases cannot run with more instances!
+
     /* set PARAM_ID_HW_EP_FRAME_SIZE_FACTOR */
-    // paramSize = sizeof(struct param_id_hw_ep_frame_size_factor_t);
-    // payload = create_agm_param_payload(paramSize, &payloadSize, &padBytes);
-    // if (!payload) {
-    //     return -ENOMEM;
-    // }
 
-    // // Fill header
-    // header = (struct apm_module_param_data_t*)payload;
-    // header->module_instance_id = miid;
-    // header->param_id = PARAM_ID_HW_EP_FRAME_SIZE_FACTOR;
-    // header->error_code = 0x0;
-    // header->param_size = paramSize;
+    paramSize = sizeof(struct param_id_hw_ep_frame_size_factor_t);
+    payload = create_agm_param_payload(paramSize, &payloadSize, &padBytes);
+    if (!payload) {
+        return -ENOMEM;
+    }
 
-    // alsaSink_frmSizeFcr = (struct param_id_hw_ep_frame_size_factor_t*)(payload +
-    //            sizeof(struct apm_module_param_data_t));
-    // alsaSink_frmSizeFcr->frame_size_factor = frame_size_fcr;
+    // Fill header
+    header = (struct apm_module_param_data_t*)payload;
+    header->module_instance_id = miid;
+    header->param_id = PARAM_ID_HW_EP_FRAME_SIZE_FACTOR;
+    header->error_code = 0x0;
+    header->param_size = paramSize;
+
+    alsaSink_frmSizeFcr = (struct param_id_hw_ep_frame_size_factor_t*)(payload +
+               sizeof(struct apm_module_param_data_t));
+    alsaSink_frmSizeFcr->frame_size_factor = frame_size_fcr;
     
-    // paddedSize = payloadSize + padBytes;
+    paddedSize = payloadSize + padBytes;
 
-    // printf("---\tpayload:\n");
-    // printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
-    // printf("---\t\theader->param_id: 0x%X (PARAM_ID_HW_EP_FRAME_SIZE_FACTOR)\n", header->param_id);
-    // printf("---\t\talsaSink_frmSizeFcr->frame_size_factor: %d\n", frame_size_fcr);
+    printf("---\tpayload:\n");
+    printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
+    printf("---\t\theader->param_id: 0x%X (PARAM_ID_HW_EP_FRAME_SIZE_FACTOR)\n", header->param_id);
+    printf("---\t\talsaSink_frmSizeFcr->frame_size_factor: %d\n", frame_size_fcr);
 
-    // ret = set_agm_param(mixer, frontend_name, (void *)payload, paddedSize);
+    ret = set_agm_param(mixer, frontend_name, (void *)payload, paddedSize);
 
-    // free(payload);
+    free(payload);
 
     return ret;
 }
@@ -1259,13 +1355,36 @@ done:
 
 
 
-int configure_agm(unsigned int physical_card, unsigned int physical_device, unsigned int period_count, 
+static bool is_alsa_pcm_open(unsigned int card_id, unsigned int device_id)
+{
+    char path[64];
+    char line[64];
+
+    snprintf(path, sizeof(path), "/proc/asound/card%u/pcm%up/sub0/status", card_id, device_id);
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return false;
+
+    bool open = false;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "state:", 6) == 0) {
+            open = strstr(line, "closed") == NULL;
+            break;
+        }
+    }
+
+    fclose(f);
+    return open;
+}
+
+int configure_agm_modules(unsigned int physical_card, unsigned int physical_device, unsigned int period_count,
                          unsigned int frame_size_fcr)
 {
     uint32_t miid = 0;
+    uint32_t mid = 0;
 
     // retrieve the instance id of the PSPD MFC module...
-    if (get_agm_module_iid(g_mixer, g_frontend_name, g_backend_name, PER_STREAM_PER_DEVICE_MFC, &miid) == 0) {
+    if (get_agm_module_iid(g_mixer, g_frontend_name, g_backend_name, PER_STREAM_PER_DEVICE_MFC, &miid, &mid) == 0) {
         printf("\n");
          // ...and use it to configure one of its params
         if (configure_agm_mfc(g_mixer, g_frontend_name, g_backend_config.rate, 
@@ -1279,24 +1398,42 @@ int configure_agm(unsigned int physical_card, unsigned int physical_device, unsi
         //return -1; //VIC we can live without an MFC module
     }
     printf("\n");
-   
 
-    // same with the Alsa Sink module found in the device subgraph...
-    // if (get_agm_module_iid (g_mixer, g_frontend_name, g_backend_name, DEVICE_HW_ENDPOINT_RX, &miid) == 0) {
-    //     printf("\n");
-    //     // ...we configure two of its params
-    //     if (configure_agm_alsa_sink(g_mixer, g_frontend_name, physical_card, physical_device, 
-    //                                 period_count, frame_size_fcr, miid)) {
-    //         printf("Failed to configure Alsa Sink\n");
-    //         // return -1;
-    //     }
-    // }
-    // else {
-    //     printf("Alsa Sink not present in this graph\n");
-    //     return -1; //VIC the Alsa Sink is absolutely needed on the Rpi
-    // }
     
+    // same with the device hardware endpoint rx (sink) module found in the device subgraph...
+    // skip if the physical PCM is already open by another instance (can only be configured once, before pcm_start)
+    if (!is_alsa_pcm_open(physical_card, physical_device)) {
+        if (get_agm_module_iid(g_mixer, g_frontend_name, g_backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) == 0) {
+            printf("\n");
+
+            // if the module is Codec DMA Sink
+            if(mid == 0x07001023)  {
+                if (configure_agm_dma_sink(g_mixer, g_frontend_name, physical_card, physical_device,
+                                           frame_size_fcr, miid)) {
+                    printf("Failed to configure Coced DMA Sink\n");
+                    return -1;
+                }
+            }
+            // if the module is Alsa Device Sink
+            else if(mid == 0x18000002) {
+                // ...we configure two of its params
+                if (configure_agm_alsa_sink(g_mixer, g_frontend_name, physical_card, physical_device,
+                                            period_count, frame_size_fcr, miid)) {
+                    printf("Failed to configure Alsa Device Sink\n");
+                    return -1;
+                }
+            }
+        }
+        else {
+            printf("Device Hardware Endpoint Rx not present in this graph!\n");
+            return -1; //VIC a module tagged as DEVICE_HW_ENDPOINT_RX is absolutely needed for playback
+        }
+    }
+    else {
+        printf("Skipping Hardware Endpoint Rx configuration: physical PCM %u:%u already open\n", physical_card, physical_device);
+    }
     printf("\n");
+
 
     return 0;
 }

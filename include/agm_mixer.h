@@ -42,7 +42,7 @@ int init_agm_mixer(unsigned int virtual_card, char *frontend_name, char *backend
                    struct agm_key_value stream_kv, struct agm_key_value instance_kv, struct agm_key_value streampp_kv, 
                    struct agm_key_value devicepp_kv, struct agm_key_value device_kv);
 
-int configure_agm(unsigned int physical_card, unsigned int physical_device, unsigned int period_count, 
+int configure_agm_modules(unsigned int physical_card, unsigned int physical_device, unsigned int period_count, 
                   unsigned int frame_size_fcr);
 
 void cleanup_agm(void);

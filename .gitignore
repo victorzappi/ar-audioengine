@@ -24,8 +24,10 @@ build/
 # Build objs
 obj/
 
-# Editor
+# Editors
 .vscode/
+.vscode
+*.code-workspace
 .claude/
 *.swp
 *~
