@@ -639,14 +639,14 @@ static int get_backend_info(const char* filename, char *backend_name, void *conf
     file = fopen(filename, "r");
     if (!file) {
         ret = -EINVAL;
-        printf("Failed to open xml file name %s ret %d", filename, ret);
+        printf("Failed to open xml file name %s ret %d\n", filename, ret);
         goto done;
     }
 
     parser = XML_ParserCreate(NULL);
     if (!parser) {
         ret = -EINVAL;
-        printf("Failed to create XML ret %d", ret);
+        printf("Failed to create XML ret %d\n", ret);
         goto closeFile;
     }
     if (type == DEVICE) {
@@ -667,20 +667,20 @@ static int get_backend_info(const char* filename, char *backend_name, void *conf
         buf = XML_GetBuffer(parser, 1024);
         if (buf == NULL) {
             ret = -EINVAL;
-            printf("XML_Getbuffer failed ret %d", ret);
+            printf("XML_Getbuffer failed ret %d\n", ret);
             goto freeParser;
         }
 
         bytes_read = fread(buf, 1, 1024, file);
         if (bytes_read < 0) {
             ret = -EINVAL;
-            printf("fread failed ret %d", ret);
+            printf("fread failed ret %d\n", ret);
             goto freeParser;
         }
 
         if (XML_ParseBuffer(parser, bytes_read, bytes_read == 0) == XML_STATUS_ERROR) {
             ret = -EINVAL;
-            printf("XML ParseBuffer failed for %s file ret %d", filename, ret);
+            printf("XML ParseBuffer failed for %s file ret %d\n", filename, ret);
             goto freeParser;
         }
         if (bytes_read == 0 || ((struct device_config *)config)->rate != 0)

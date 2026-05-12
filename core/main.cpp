@@ -40,9 +40,6 @@ configure, build and clean commands in CMakeLists.txt
 #define OPTPARSE_IMPLEMENTATION
 #include "optparse.h"
 
-//TODO pass this at run-time
-const char* hw_mixer_path = "speaker";
-
 struct cmd {
     unsigned int virtual_card;
     unsigned int virtual_device;
@@ -50,6 +47,7 @@ struct cmd {
     char *backend_name;
     unsigned int physical_card;
     unsigned int physical_device;
+    char *playback_path;
 
     unsigned int frame_size_fcr;
 
@@ -86,6 +84,7 @@ void init_cmd(struct cmd *cmd)
     cmd->virtual_device = 100;
     cmd->frontend_name = nullptr;
     cmd->backend_name = nullptr;
+    cmd->playback_path = strdup("speaker");
     cmd->physical_card = 0;
     cmd->physical_device = 0;
 
@@ -217,6 +216,8 @@ void cleanup_cmd(struct cmd *cmd)
         free(cmd->frontend_name);
     if (cmd->backend_name != NULL)
         free(cmd->backend_name);
+    if (cmd->playback_path != NULL)
+        free(cmd->playback_path);
 }
 
 void cleanup_ctx(struct pcm_ctx *ctx)
@@ -344,7 +345,7 @@ static int set_frontend_name(const char *xml_path,
                 *name_out = strdup(tmp);
                 ret = (*name_out != NULL) ? 0 : -1;
                 if (ret == 0)
-                    printf("virtual card: %u, device: %u -> frontend: %s\n\n",
+                    printf("virtual card: %u, device: %u -> frontend: %s\n",
                            virtual_card, virtual_device, *name_out);
                 goto done;
             }
@@ -407,11 +408,12 @@ void print_usage(const char *argv0)
     fprintf(stderr, "-r | --rate <rate>                     The audio sample rate\n");
     fprintf(stderr, "-b | --bits <bit-count>                The number of bits in one sample\n");
     fprintf(stderr, "-f | --float                           The samples are in floating-point PCM\n");
-    fprintf(stderr, "-x | --stream <value>                  The stream key value as a string or number (0 if not present)\n");
-    fprintf(stderr, "-y | --streampp <value>                The streampp key value as a string or number (0 if not present)\n");
-    fprintf(stderr, "-w | --devicepp <value>                The devicepp key value as a string or number (0 if not present)\n");
+    fprintf(stderr, "-w | --stream <value>                  The stream key value as a string or number (0 if not present)\n");
+    fprintf(stderr, "-x | --streampp <value>                The streampp key value as a string or number (0 if not present)\n");
+    fprintf(stderr, "-y | --devicepp <value>                The devicepp key value as a string or number (0 if not present)\n");
     fprintf(stderr, "-z | --device <value>                  The device key value as a string or number (0 if not present)\n");
     fprintf(stderr, "-i | --instance <value>                The intance key value as a string or number (0 if not present)\n");
+    fprintf(stderr, "-o | --playback-path <path>            The hardware mixer playback path\n");
 }
 
 int main(int argc, char **argv)
@@ -433,11 +435,12 @@ int main(int argc, char **argv)
         { "rate",               'r', OPTPARSE_REQUIRED },
         { "bits",               'b', OPTPARSE_REQUIRED },
         { "float",              'f', OPTPARSE_NONE     },
-        { "stream",             'x', OPTPARSE_REQUIRED },
-        { "streampp",           'y', OPTPARSE_REQUIRED },
-        { "devicepp",           'w', OPTPARSE_REQUIRED },
+        { "stream",             'w', OPTPARSE_REQUIRED },
+        { "streampp",           'x', OPTPARSE_REQUIRED },
+        { "devicepp",           'y', OPTPARSE_REQUIRED },
         { "device",             'z', OPTPARSE_REQUIRED },
         { "instance",           'i', OPTPARSE_REQUIRED },
+        { "playback-path",      'o', OPTPARSE_REQUIRED },
         { "help",               'h', OPTPARSE_NONE     },
         { 0, 0, OPTPARSE_NONE }
     };
@@ -513,7 +516,7 @@ int main(int argc, char **argv)
         case 'f':
             cmd.is_float = true;
             break;
-        case 'x':
+        case 'w':
             /* Try to parse as number first */
             if (sscanf(opts.optarg, "%u", &cmd.stream_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
@@ -524,7 +527,7 @@ int main(int argc, char **argv)
                 }
             }
             break;
-        case 'y':
+        case 'x':
             /* Try to parse as number first */
             if (sscanf(opts.optarg, "%u", &cmd.streampp_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
@@ -535,7 +538,7 @@ int main(int argc, char **argv)
                 }
             }
             break;
-        case 'w':
+        case 'y':
             /* Try to parse as number first */
             if (sscanf(opts.optarg, "%u", &cmd.devicepp_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
@@ -568,6 +571,14 @@ int main(int argc, char **argv)
                 }
             }
             break;
+        case 'o':
+            free(cmd.playback_path);
+            cmd.playback_path = strdup(opts.optarg);
+            if (cmd.playback_path == NULL) {
+                fprintf(stderr, "failed parsing playback path '%s'\n", opts.optarg);
+                return EXIT_FAILURE;
+            }
+            break;
         case 'h':
             print_usage(argv[0]);
             return EXIT_SUCCESS;
@@ -577,9 +588,9 @@ int main(int argc, char **argv)
         }
     }
 
-    if (set_frontend_name("/etc/card-defs.xml", cmd.virtual_card, cmd.virtual_device,
+    if (set_frontend_name(CARDS_CONF_FILE, cmd.virtual_card, cmd.virtual_device,
                           &cmd.frontend_name) != 0) {
-        fprintf(stderr, "Frontend not found for virtual card %u device %u in /etc/card-defs.xml\n",
+        fprintf(stderr, "Frontend not found for virtual card %u device %u in " CARDS_CONF_FILE "\n",
                 cmd.virtual_card, cmd.virtual_device);
         cleanup_cmd(&cmd);
         return EXIT_FAILURE;
@@ -607,7 +618,7 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    if (set_hw_mixer_path(hw_mixer_path) < 0) {
+    if (set_hw_mixer_path(cmd.playback_path) < 0) {
         cleanup_hw_mixer();
         cleanup_ctx(&ctx);
         cleanup_cmd(&cmd);

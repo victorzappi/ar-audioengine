@@ -130,12 +130,17 @@ endif()
 if(NOT BACKEND_CONF_FILE)
     set(BACKEND_CONF_FILE "/etc/backend_conf.xml")
 endif()
+if(NOT CARDS_CONF_FILE)
+    set(CARDS_CONF_FILE "/etc/card-defs.xml")
+endif()
 target_compile_definitions(ar_audioengine PRIVATE
     MIXER_PATHS="${MIXER_PATHS}"
     BACKEND_CONF_FILE="${BACKEND_CONF_FILE}"
+    CARDS_CONF_FILE="${CARDS_CONF_FILE}"
 )
 message(STATUS "Mixer paths: ${MIXER_PATHS}")
 message(STATUS "Backend conf: ${BACKEND_CONF_FILE}")
+message(STATUS "Cards conf: ${CARDS_CONF_FILE}")
 #-------------------------------------------------------------------------
 
 

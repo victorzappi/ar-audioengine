@@ -11,7 +11,7 @@
 #include <string.h>
 
 #define MAX_CTLS 128
-#define MAX_PATHS 32
+#define MAX_PATHS 64
 #define MAX_NAME 64
 #define MAX_VALUE 32
 
@@ -33,7 +33,7 @@ static struct path g_paths[MAX_PATHS];
 static int g_path_count = 0;
 
 // XML parsing state
-static int in_path = 0;
+static int path_depth = 0;
 static struct path *current_path = NULL;
 
 static void apply_ctl(const char *name, const char *value)
@@ -60,29 +60,30 @@ static void XMLCALL xml_start(void *data, const char *el, const char **attr)
     (void)data;
 
     if (strcmp(el, "path") == 0) {
-        if (g_path_count >= MAX_PATHS) return;
-        current_path = &g_paths[g_path_count++];
-        current_path->ctl_count = 0;
-        current_path->name[0] = '\0';
-        
-        for (int i = 0; attr[i]; i += 2) {
-            if (strcmp(attr[i], "name") == 0) {
-                strncpy(current_path->name, attr[i+1], MAX_NAME - 1);
+        path_depth++;
+        if (path_depth == 1) {
+            if (g_path_count >= MAX_PATHS) return;
+            current_path = &g_paths[g_path_count++];
+            current_path->ctl_count = 0;
+            current_path->name[0] = '\0';
+            for (int i = 0; attr[i]; i += 2) {
+                if (strcmp(attr[i], "name") == 0)
+                    strncpy(current_path->name, attr[i+1], MAX_NAME - 1);
             }
         }
-        in_path = 1;
+        // nested <path> references are path-includes; ignore them
     }
     else if (strcmp(el, "ctl") == 0) {
         const char *name = NULL;
         const char *value = NULL;
-        
+
         for (int i = 0; attr[i]; i += 2) {
             if (strcmp(attr[i], "name") == 0) name = attr[i+1];
             else if (strcmp(attr[i], "value") == 0) value = attr[i+1];
         }
-        
+
         if (name && value) {
-            if (in_path && current_path) {
+            if (path_depth > 0 && current_path) {
                 if (current_path->ctl_count < MAX_CTLS) {
                     struct ctl_setting *s = &current_path->ctls[current_path->ctl_count++];
                     strncpy(s->name, name, MAX_NAME - 1);
@@ -103,8 +104,9 @@ static void XMLCALL xml_end(void *data, const char *el)
 {
     (void)data;
     if (strcmp(el, "path") == 0) {
-        in_path = 0;
-        current_path = NULL;
+        path_depth--;
+        if (path_depth == 0)
+            current_path = NULL;
     }
 }
 
@@ -164,11 +166,12 @@ int set_hw_mixer_path(const char *path_name)
             for (int j = 0; j < g_paths[i].ctl_count; j++) {
                 apply_ctl(g_paths[i].ctls[j].name, g_paths[i].ctls[j].value);
             }
+            printf("hw_mixer: playback path '%s'\n\n", path_name);
             return 0;
         }
     }
 
-    //fprintf(stderr, "mixer: path '%s' not found\n", path_name);
+    fprintf(stderr, "hw_mixer: path '%s' not found\n", path_name);
     return -1;
 }
 

@@ -97,7 +97,7 @@ cmake --build build
 cmake -B build -DCMAKE_BUILD_TYPE=Debug
 
 # Custom board-specific config file paths
-cmake -B build -DMIXER_PATHS=/etc/mixer_paths_custom.xml -DBACKEND_CONF_FILE=/etc/backend_conf_custom.xml
+cmake -B build -DMIXER_PATHS=/path/to/mixer_paths.xml -DBACKEND_CONF_FILE=/path/to/backend_conf.xml -DCARDS_CONF_FILE=/path/to/card-defs.xml
 ```
 
 If not passed, the default configuration XML files will target the [Qualcomm RB3 Gen 2](https://www.qualcomm.com/developer/hardware/rb3-gen-2-development-kit) board.\
@@ -148,6 +148,7 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE="$OECORE_NATIVE_SYSROOT/usr/share/cmake/OE
 | `-w` | Device PP graph key value | `DEVICEPP_RX_AUDIO_MBDRC` |
 | `-z` | Device graph key value | `SPEAKER` |
 | `-i` | Instance graph key value | `INSTANCE_1` |
+| `-o` | Hardware mixer playback path | `speaker` |
 
 Graph key values can be passed as strings (e.g., `SPEAKER`) or hex numbers.
 
