@@ -124,7 +124,7 @@ struct param_id_alsa_device_intf_cfg_t
    int32_t silence_threshold;
 }__attribute__((packed));
 
-/* Payload of the PARAM_ID_HW_EP_FRAME_SIZE_FACTOR parameter in the Alsa Sink Module.  */
+/* Payload of the PARAM_ID_HW_EP_FRAME_SIZE_FACTOR parameter in the harware endpoint/Sink Modules.  */
 struct param_id_hw_ep_frame_size_factor_t
 {
    int32_t frame_size_factor;
@@ -560,7 +560,7 @@ void start_tag(void *userdata, const XML_Char *tag_name, const XML_Char **attr)
 
     if (attr[8]) {
         if (strcmp(attr[8], "format") == 0) {
-            printf("PCM format found\n");
+            // printf("PCM format found\n");
             fmt = get_pcm_format(attr[9]);
             if (fmt != PCM_FORMAT_INVALID && fmt < PCM_FORMAT_MAX)
                 config->format = fmt;
@@ -612,7 +612,7 @@ void start_group_tag(void *userdata, const XML_Char *tag_name, const XML_Char **
 
     if (attr[10]) {
         if (strcmp(attr[10], "format") == 0) {
-            printf("PCM format found\n");
+            //printf("PCM format found\n");
             fmt = get_pcm_format(attr[11]);
             if (fmt != PCM_FORMAT_INVALID && fmt < PCM_FORMAT_MAX)
                 config->format = fmt;
@@ -733,7 +733,7 @@ int set_agm_backend_config(struct mixer *mixer, char *backend_name, struct devic
 
     // Print success message with all key-value pairs
     if (ret == 0) {
-        printf("---\tmixer ctl: %s (data type) %ld %ld %ld %ld", mixer_str, media_config[0], media_config[1], media_config[2],
+        printf("---\tmixer ctl: %s (data type) %ld %ld %ld %ld\n", mixer_str, media_config[0], media_config[1], media_config[2],
                media_config[3]);
     }
         
@@ -1044,7 +1044,7 @@ int configure_agm_mfc(struct mixer *mixer, char *frontend_name, unsigned int rat
 int configure_agm_dma_sink(struct mixer *mixer, char *frontend_name, unsigned int card_id, unsigned int device_id, 
                            unsigned int frame_size_fcr, uint32_t miid)
 {
-    printf("---configure_agm_alsa_sink\n");
+    printf("---configure_agm_dma_sink\n");
 
     int ret = 0;
     struct apm_module_param_data_t* header = NULL;
@@ -1269,7 +1269,6 @@ int init_agm_mixer(unsigned int virtual_card, char *frontend_name, char *backend
         g_backend_config.bits = format_to_signed_pcm_bits(g_backend_config.format); // inverse of signed_pcm_bits_to_format()
     }
 
-    //VIC this is not needed on Pi, but still unclear if needed on other platforms!
     // intialize backend via mixer with its standard configuration
     if (set_agm_backend_config(g_mixer, g_backend_name, &g_backend_config)) {
         printf("Failed to configure backend %s\n", g_backend_name);

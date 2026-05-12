@@ -133,16 +133,17 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE="$OECORE_NATIVE_SYSROOT/usr/share/cmake/OE
 | Option | Description | Default |
 |---|---|---|
 | `-c` | Virtual card number | `100` |
-| `-d` | Frontend device number | `100` |
+| `-d` | Virtual device number | `100` |
+| `-C` | Physical card number | `0` |
+| `-D` | Physical device number | `0` |
 | `-B` | Backend device name | `CODEC_DMA-LPAIF_WSA-RX-0` |
-| `-C` | Physical card number (Alsa Sink) | `0` |
-| `-D` | Physical device number (Alsa Sink) | `0` |
 | `-p` | Period size | `960` |
 | `-q` | Period count | `4` |
 | `-n` | Number of channels | `2` |
 | `-r` | Sample rate | `48000` |
 | `-b` | Bits per sample | `16` |
-| `-f` | Use floating-point PCM | off |
+| `-f` | Use floating-point PCM | `off` |
+| `-s` | Backend period size factor (period size = 48 samples x factor) | `1` |
 | `-x` | Stream graph key value | `PCM_LL_PLAYBACK` |
 | `-y` | Stream PP graph key value | `0` |
 | `-w` | Device PP graph key value | `DEVICEPP_RX_AUDIO_MBDRC` |

@@ -189,15 +189,9 @@ static int init_pcm(struct pcm_ctx* ctx, struct cmd *cmd)
 
     /* open pcm */
     ctx->pcm = pcm_open(cmd->virtual_card,
-                        cmd->virtual_device,
+                        cmd->virtual_card,
                         cmd->flags,
                         &cmd->config);
-    
-    if (!ctx->pcm) {
-        fprintf(stderr, "failed to open frontend pcm %u,%u\n",
-                cmd->virtual_card, cmd->virtual_device);
-        return -1;
-    }
     
     if (!ctx->pcm || !pcm_is_ready(ctx->pcm)) {
         fprintf(stderr, "failed to open for pcm %u,%u. %s\n",
@@ -206,6 +200,13 @@ static int init_pcm(struct pcm_ctx* ctx, struct cmd *cmd)
         pcm_close(ctx->pcm);
         return -1;
     }
+
+    printf("\nPCM (frontend) config:\n");
+    printf("  rate        %u Hz\n",     cmd->config.rate);
+    printf("  channels    %u\n",        cmd->config.channels);
+    printf("  format      %u-bit %s\n", cmd->bits, cmd->is_float ? "float" : "signed int");
+    printf("  period size %u frames\n", cmd->config.period_size);
+    printf("  periods     %u\n\n",      cmd->config.period_count);
 
     return 0;
 }
@@ -242,7 +243,6 @@ void cleanup_pcm(struct pcm *pcm)
 }
 
 std::atomic_int should_stop(0);
-// static int should_stop = 0;
 
 int audio_loop(struct pcm_ctx *ctx);
 struct audio_ctx create_audio_ctx(struct pcm_ctx *ctx);
@@ -256,7 +256,7 @@ void sig_handler(int sig)
 {
     /* allow the stream to be closed gracefully */
     signal(sig, SIG_IGN);
-    //should_stop = 1;
+    printf("\nStopping PCM stream...\n");
     stream_close();
 
 }
@@ -408,6 +408,7 @@ void print_usage(const char *argv0)
     fprintf(stderr, "-r | --rate <rate>                     The audio sample rate\n");
     fprintf(stderr, "-b | --bits <bit-count>                The number of bits in one sample\n");
     fprintf(stderr, "-f | --float                           The samples are in floating-point PCM\n");
+    fprintf(stderr, "-s | --framesize-factor <factor>       The factor that determines the size of the backend period, as 48 samples x factor\n");
     fprintf(stderr, "-w | --stream <value>                  The stream key value as a string or number (0 if not present)\n");
     fprintf(stderr, "-x | --streampp <value>                The streampp key value as a string or number (0 if not present)\n");
     fprintf(stderr, "-y | --devicepp <value>                The devicepp key value as a string or number (0 if not present)\n");
@@ -435,6 +436,7 @@ int main(int argc, char **argv)
         { "rate",               'r', OPTPARSE_REQUIRED },
         { "bits",               'b', OPTPARSE_REQUIRED },
         { "float",              'f', OPTPARSE_NONE     },
+        { "framesize-factor",   's', OPTPARSE_REQUIRED },
         { "stream",             'w', OPTPARSE_REQUIRED },
         { "streampp",           'x', OPTPARSE_REQUIRED },
         { "devicepp",           'y', OPTPARSE_REQUIRED },
@@ -515,6 +517,12 @@ int main(int argc, char **argv)
             break;
         case 'f':
             cmd.is_float = true;
+            break;
+        case 's':
+            if (sscanf(opts.optarg, "%u", &cmd.frame_size_fcr) != 1) {
+                fprintf(stderr, "failed parsing framesize factor '%s'\n", opts.optarg);
+                return EXIT_FAILURE;
+            }
             break;
         case 'w':
             /* Try to parse as number first */
@@ -651,13 +659,6 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    if (cmd.config.format == PCM_FORMAT_FLOAT_LE) {
-        printf("floating-point PCM\n");
-    } 
-    else {
-        printf("signed PCM\n");
-    }
-
     if (start_audio(&ctx) < 0) {
         cleanup_pcm(ctx.pcm);
         cleanup_agm();
@@ -688,18 +689,17 @@ int audio_loop(struct pcm_ctx *ctx)
         return -1;
     }
 
+    struct audio_ctx actx = create_audio_ctx(ctx);  // Must declare AND initialize together
+
+    if (setup(&actx, NULL)) {
+        fprintf(stderr, "setup function failed\n");
+        cleanup(&actx, NULL);
+        return -2;
+    }
+
     if (pcm_start(ctx->pcm) < 0) {
         fprintf(stderr, "PCM start error\n");
         return -1;
-    }
-
-    struct audio_ctx actx = create_audio_ctx(ctx);  // Must declare AND initialize together
-    int status_code = setup(&actx, NULL);
-    if(status_code != 0) {
-        fprintf(stderr, "setup function failed\n");
-        cleanup(&actx, NULL);
-        pcm_stop(ctx->pcm);
-        return -2;
     }
 
     // catch ctrl-c to shutdown cleanly
@@ -707,7 +707,7 @@ int audio_loop(struct pcm_ctx *ctx)
 
     //------------------------
     // actual audio loop
-    while(!should_stop.load()) {
+    while (!should_stop.load()) {
         render(&actx, NULL);
         
         if (!ctx->is_float) {
@@ -736,14 +736,14 @@ int audio_loop(struct pcm_ctx *ctx)
 // Function to create audio context from PCM context
 struct audio_ctx create_audio_ctx(struct pcm_ctx *ctx) {
     const struct pcm_config *config = pcm_get_config(ctx->pcm);
-    
+
     struct audio_ctx actx = {
         .audio_buffer = ctx->audio_buffer,
         .period_size = config->period_size,
         .channels = config->channels,
         .sample_rate = config->rate
     };
-    
+
     return actx;
 }
 
