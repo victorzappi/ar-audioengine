@@ -110,7 +110,7 @@ static void XMLCALL xml_end(void *data, const char *el)
     }
 }
 
-int init_hw_mixer(unsigned int card, const char *mixer_path_xml)
+int init_hw_mixer(const char *mixer_path_xml, unsigned int card)
 {
     g_mixer = mixer_open(card);
     if (!g_mixer) {

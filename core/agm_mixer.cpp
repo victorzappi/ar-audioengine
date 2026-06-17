@@ -47,9 +47,14 @@
 #include "agm_mixer.h"
 #include "audioreach_mappings.h"
 
+
+#define MODULE_ID_CODEC_DMA_SINK                    0x07001023       
+#define MODULE_ID_ALSA_DEVICE_SINK                  0x18000002
+
 #define PARAM_ID_MFC_OUTPUT_MEDIA_FORMAT            0x08001024
 #define PARAM_ID_ALSA_DEVICE_INTF_CFG               0x08FFFFF3
 #define PARAM_ID_HW_EP_FRAME_SIZE_FACTOR            0x08001018
+#define PARAM_ID_HW_EP_MF_CFG                       0x08001017
 
 //-------------------------------
 // moved from agm_mixer.cpp
@@ -130,6 +135,15 @@ struct param_id_hw_ep_frame_size_factor_t
    int32_t frame_size_factor;
 }__attribute__((packed));
 
+/* Payload of the PARAM_ID_HW_EP_MF_CFG parameter in the hardware endpoint/Sink Modules. */
+struct param_id_hw_ep_mf_cfg_t
+{
+    uint32_t sample_rate;
+    uint16_t bit_width;
+    uint16_t num_channels;
+    uint32_t data_format;
+} __attribute__((packed));
+
 struct apm_module_param_data_t
 {
    uint32_t module_instance_id;
@@ -194,63 +208,95 @@ static void print_metadata_info(const char *mixer_str,
 }
 
 // Helper function to get mixer value via an array, including metadata
-static int get_mixer_ctl_array(struct mixer *mixer, const char *mixer_str, 
+static int get_mixer_ctl_array(const char *mixer_str,
                                 void *payload, size_t payload_size)
 {
     struct mixer_ctl *ctl;
     int ret = 0;
-    
-    ctl = mixer_get_ctl_by_name(mixer, mixer_str);
+
+    ctl = mixer_get_ctl_by_name(g_mixer, mixer_str);
     if (!ctl) {
-        printf("Could not get ctl for mixer cmd - %s\n", mixer_str);
+        printf("Could not find mixer ctl: %s\n", mixer_str);
         return -ENODEV;
     }
     
     ret = mixer_ctl_get_array(ctl, payload, payload_size);
     if (ret < 0) {
-        printf("Could not get ctl for mixer cmd - %s, ret %d\n", mixer_str, ret);
+        printf("Could not get mixer ctl array: %s, error %d (%s)\n", mixer_str, errno, 
+                strerror(errno < 0 ? -errno : errno));
     }
     
     return ret;
 }
 
+// Helper function to get mixer enum value as a string
+int get_mixer_ctl_string(const char *mixer_str,
+                         char *payload, size_t payload_size)
+{
+    struct mixer_ctl *ctl;
+    unsigned int value;
+    const char *enum_str;
+    int ret = 0;
+
+    ctl = mixer_get_ctl_by_name(g_mixer, mixer_str);
+    if (!ctl) {
+        printf("Could not find mixer ctl: %s\n", mixer_str);
+        return -ENODEV;
+    }
+
+    value = mixer_ctl_get_value(ctl, 0);
+    enum_str = mixer_ctl_get_enum_string(ctl, value);
+    if (!enum_str) {
+        printf("Could not get mixer ctl string: %s, error %d (%s)\n", mixer_str, errno, 
+                strerror(errno < 0 ? -errno : errno));
+        return -EINVAL;
+    }
+
+    strncpy(payload, enum_str, payload_size - 1);
+    payload[payload_size - 1] = '\0';
+
+    return ret;
+}
+
 // Helper function to set mixer value via an array, including metadata
-static int set_mixer_ctl_array(struct mixer *mixer, const char *mixer_str, 
+static int set_mixer_ctl_array(const char *mixer_str,
                               const void *payload, size_t payload_size)
 {
     struct mixer_ctl *ctl;
     int ret = 0;
-    
-    ctl = mixer_get_ctl_by_name(mixer, mixer_str);
+
+    ctl = mixer_get_ctl_by_name(g_mixer, mixer_str);
     if (!ctl) {
-        printf("Could not get ctl for mixer cmd - %s\n", mixer_str);
+        printf("Could not find mixer ctl: %s\n", mixer_str);
         return -ENODEV;
     }
     
     ret = mixer_ctl_set_array(ctl, payload, payload_size);
     if (ret < 0) {
-        printf("Could not set ctl for mixer cmd - %s, ret %d\n", mixer_str, ret);
+        printf("Could not set mixer ctl array: %s, error %d (%s)\n", mixer_str, errno, 
+                strerror(errno < 0 ? -errno : errno));
     }
     
     return ret;
 }
 
 // Helper function to set mixer enum via a string
-int set_mixer_ctl_string(struct mixer *mixer, const char *mixer_str, 
-                            const char *payload)                    
+int set_mixer_ctl_string(const char *mixer_str,
+                            const char *payload)
 {
     struct mixer_ctl *ctl;
     int ret = 0;
-    
-    ctl = mixer_get_ctl_by_name(mixer, mixer_str);
+
+    ctl = mixer_get_ctl_by_name(g_mixer, mixer_str);
     if (!ctl) {
-        printf("Could not get ctl for mixer cmd - %s\n", mixer_str);
+        printf("Could not find mixer ctl: %s\n", mixer_str);
         return -ENODEV;
     }
     
     ret = mixer_ctl_set_enum_by_string(ctl, (const char *)payload); 
     if (ret < 0) {
-        printf("Could not set ctl for mixer cmd - %s %s, ret %d\n", mixer_str, payload, ret);
+        printf("Could not set mixer ctl string: %s %s, error %d (%s)\n", mixer_str, payload, errno, 
+                strerror(errno < 0 ? -errno : errno));
     }
     
     return ret;
@@ -325,8 +371,8 @@ static char* build_mixer_control_string(const char *device_name, const char *con
     return mixer_str;
 }
 
-int set_agm_device_metadata(struct mixer *mixer, char* backend_name, 
-                            struct agm_key_value device_kv, 
+int set_agm_device_metadata(char* backend_name,
+                            struct agm_key_value device_kv,
                             struct agm_key_value *calibraiton_kv, unsigned int num_ckv)
 {
     printf("---set_agm_device_metadata\n");
@@ -354,7 +400,7 @@ int set_agm_device_metadata(struct mixer *mixer, char* backend_name,
     }
         
     // Set the metadata using helper function
-    ret = set_mixer_ctl_array(mixer, mixer_str, metadata, metadata_size);
+    ret = set_mixer_ctl_array(mixer_str, metadata, metadata_size);
 
     // Print success message with all key-value pairs
     if (ret == 0) {
@@ -366,7 +412,7 @@ int set_agm_device_metadata(struct mixer *mixer, char* backend_name,
     return ret;
 }
 
-int set_agm_stream_metadata_type(struct mixer *mixer, char* frontend_name, char *metadata_type)
+int set_agm_stream_metadata_type(char* frontend_name, char *metadata_type)
 {
     printf("\t---set_agm_stream_metadata_type\n");
     
@@ -381,7 +427,7 @@ int set_agm_stream_metadata_type(struct mixer *mixer, char* frontend_name, char 
     }
  
     // Set the ctl enum via a string using helper function
-    ret = set_mixer_ctl_string(mixer, mixer_str, metadata_type);
+    ret = set_mixer_ctl_string(mixer_str, metadata_type);
 
     // Print success message with the mixer control and the enum/string
     if (ret == 0) {
@@ -392,8 +438,8 @@ int set_agm_stream_metadata_type(struct mixer *mixer, char* frontend_name, char 
     return ret;
 }
 
-int set_agm_stream_metadata(struct mixer *mixer, char* frontend_name, 
-                            struct agm_key_value *stream_kv, unsigned int num_skv, 
+int set_agm_stream_metadata(char* frontend_name,
+                            struct agm_key_value *stream_kv, unsigned int num_skv,
                             struct agm_key_value *calibraiton_kv, unsigned int num_ckv)
 {
     printf("---set_agm_stream_metadata\n");
@@ -407,7 +453,7 @@ int set_agm_stream_metadata(struct mixer *mixer, char* frontend_name,
     int num_props = 0;
     char *type = (char *)"ZERO";
 
-    ret = set_agm_stream_metadata_type(mixer, frontend_name, type);
+    ret = set_agm_stream_metadata_type(frontend_name, type);
     if (ret)
         return ret;
 
@@ -417,16 +463,16 @@ int set_agm_stream_metadata(struct mixer *mixer, char* frontend_name,
     if (!metadata) {
         return -ENOMEM;
     }
-    
+
     // Construct mixer control string
     mixer_str = build_mixer_control_string(frontend_name, control);
     if (!mixer_str) {
         free(metadata);
         return -ENOMEM;
     }
-       
+
     // Set the metadata using helper function
-    ret = set_mixer_ctl_array(mixer, mixer_str, metadata, metadata_size);
+    ret = set_mixer_ctl_array(mixer_str, metadata, metadata_size);
 
     // Print success message with all key-value pairs
     if (ret == 0) {
@@ -438,8 +484,8 @@ int set_agm_stream_metadata(struct mixer *mixer, char* frontend_name,
     return ret;
 } 
 
-int set_agm_streamdevice_metadata(struct mixer *mixer, char* frontend_name, char* backend_name, 
-                                  struct agm_key_value *streamdevice_kv, unsigned int num_sdkv, 
+int set_agm_streamdevice_metadata(char* frontend_name, char* backend_name,
+                                  struct agm_key_value *streamdevice_kv, unsigned int num_sdkv,
                                   struct agm_key_value *calibraiton_kv, unsigned int num_ckv)
 {
     printf("---set_agm_streamdevice_metadata\n");
@@ -453,7 +499,7 @@ int set_agm_streamdevice_metadata(struct mixer *mixer, char* frontend_name, char
     int num_props = 0;
     char *type = backend_name;
 
-    ret = set_agm_stream_metadata_type(mixer, frontend_name, type);
+    ret = set_agm_stream_metadata_type(frontend_name, type);
     if (ret)
         return ret;
 
@@ -463,16 +509,16 @@ int set_agm_streamdevice_metadata(struct mixer *mixer, char* frontend_name, char
     if (!metadata) {
         return -ENOMEM;
     }
-    
+
     // Construct mixer control string
     mixer_str = build_mixer_control_string(frontend_name, control);
     if (!mixer_str) {
         free(metadata);
         return -ENOMEM;
     }
-    
+
     // Set the metadata using helper function
-    ret = set_mixer_ctl_array(mixer, mixer_str, metadata, metadata_size);
+    ret = set_mixer_ctl_array(mixer_str, metadata, metadata_size);
 
     // Print success message with all key-value pairs
     if (ret == 0) {
@@ -485,7 +531,7 @@ int set_agm_streamdevice_metadata(struct mixer *mixer, char* frontend_name, char
 
 }
 
-int set_agm_graph(struct mixer *mixer, char* frontend_name, struct agm_key_value *graph_kv, unsigned int num_graph_kv)
+int set_agm_graph(char* frontend_name, struct agm_key_value *graph_kv, unsigned int num_graph_kv)
 {
     printf("---set_agm_graph\n");
 
@@ -493,10 +539,10 @@ int set_agm_graph(struct mixer *mixer, char* frontend_name, struct agm_key_value
     unsigned int num_ckv = 0;
 
     // we can pass the whole graph_kv vector as stream metadata
-    return set_agm_stream_metadata(mixer, frontend_name, graph_kv, num_graph_kv, calibraiton_kv, num_ckv);
+    return set_agm_stream_metadata(frontend_name, graph_kv, num_graph_kv, calibraiton_kv, num_ckv);
 }
 
-int connect_agm_frontend_to_backend(struct mixer *mixer, char* frontend_name, char* backend_name, bool connect)
+int connect_agm_frontend_to_backend(char* frontend_name, char* backend_name, bool connect)
 {
     printf("---connect_agm_frontend_to_backend\n");
     
@@ -516,7 +562,7 @@ int connect_agm_frontend_to_backend(struct mixer *mixer, char* frontend_name, ch
     }
  
     // Set the ctl enum via a string using helper function
-    ret = set_mixer_ctl_string(mixer, mixer_str, backend_name);
+    ret = set_mixer_ctl_string(mixer_str, backend_name);
 
     // Print success message with the mixer control and the enum/string
     if (ret == 0) {
@@ -704,7 +750,7 @@ int get_backend_config(const char* filename, char *backend_name, struct device_c
     return get_backend_info(filename, backend_name, (void *)config, DEVICE);
 }
 
-int set_agm_backend_config(struct mixer *mixer, char *backend_name, struct device_config *config)
+int set_agm_backend_config(char *backend_name, struct device_config *config)
 {
     printf("---set_agm_backend_config\n");
 
@@ -729,7 +775,7 @@ int set_agm_backend_config(struct mixer *mixer, char *backend_name, struct devic
     }
 
     // Set the ctl values via an array using helper function
-    ret = set_mixer_ctl_array(mixer, mixer_str, media_config, sizeof(media_config)/sizeof(media_config[0]));
+    ret = set_mixer_ctl_array(mixer_str, media_config, sizeof(media_config)/sizeof(media_config[0]));
 
     // Print success message with all key-value pairs
     if (ret == 0) {
@@ -741,7 +787,7 @@ int set_agm_backend_config(struct mixer *mixer, char *backend_name, struct devic
     return ret;
 }
 
-int get_agm_module_iid(struct mixer *mixer, char *frontend_name, char *backend_name, int tag_id, 
+int get_agm_module_iid(char *frontend_name, char *backend_name, int tag_id,
                        uint32_t *miid, uint32_t *mid)
 {
     printf("---get_agm_module_iid, searching for tag 0x%X (%s)\n", tag_id, get_tag_name(tag_id));
@@ -756,7 +802,7 @@ int get_agm_module_iid(struct mixer *mixer, char *frontend_name, char *backend_n
     char *tag_entry_ptr;
     char *type = backend_name;
 
-    ret = set_agm_stream_metadata_type(mixer, frontend_name, type);
+    ret = set_agm_stream_metadata_type(frontend_name, type);
     if (ret)
         return ret;
 
@@ -774,7 +820,7 @@ int get_agm_module_iid(struct mixer *mixer, char *frontend_name, char *backend_n
     }
 
     // Get the ctl array using helper function
-    ret = get_mixer_ctl_array(mixer, mixer_str, payload, payload_size);
+    ret = get_mixer_ctl_array(mixer_str, payload, payload_size);
     if (ret < 0) {
         free(payload);
         free(mixer_str);
@@ -827,7 +873,7 @@ int get_agm_module_iid(struct mixer *mixer, char *frontend_name, char *backend_n
     return ret;
 }
 
-int set_agm_param(struct mixer *mixer, char *frontend_name, void *payload, uint32_t size)
+int set_agm_param(char *frontend_name, void *payload, uint32_t size)
 {
     char *control = (char *)"setParam";
     char *mixer_str;
@@ -840,13 +886,44 @@ int set_agm_param(struct mixer *mixer, char *frontend_name, void *payload, uint3
     }
 
     // Set the param using helper function
-    ret = set_mixer_ctl_array(mixer, mixer_str, payload, size);
-    
+    ret = set_mixer_ctl_array(mixer_str, payload, size);
+
     // Print success message with all key-value pairs
     if (ret == 0) {
         printf("---\tmixer ctl: %s payload\n", mixer_str);
     }
 
+    free(mixer_str);
+    return ret;
+}
+
+int get_agm_param(char *frontend_name, void *payload, uint32_t size)
+{
+    char *control = (char *)"getParam";
+    char *mixer_str;
+    int ret = 0;
+
+    mixer_str = build_mixer_control_string(frontend_name, control);
+    if (!mixer_str) {
+        return -ENOMEM;
+    }
+
+    // Write the query header (module_instance_id + param_id + size + error_code)
+    ret = set_mixer_ctl_array(mixer_str, payload, size);
+    if (ret != 0) {
+        goto out;
+    }
+
+    memset(payload, 0xAA, size);   // sentinel
+
+    // Read the response back into the same buffer.
+    // AGM populates the bytes after the header with the actual param value.
+    ret = get_mixer_ctl_array(mixer_str, payload, size);
+    if (ret == 0) {
+        printf("---\tmixer ctl: %s payload (get)\n", mixer_str);
+    }
+
+out:
     free(mixer_str);
     return ret;
 }
@@ -987,7 +1064,7 @@ static uint8_t* create_agm_param_payload(size_t param_size,
     return payload;
 }
 
-int configure_agm_mfc(struct mixer *mixer, char *frontend_name, unsigned int rate, unsigned int channels, 
+int configure_agm_mfc(char *frontend_name, unsigned int rate, unsigned int channels,
                   unsigned int bits, uint32_t miid)
 {
     printf("---configure_agm_mfc\n");
@@ -999,6 +1076,7 @@ int configure_agm_mfc(struct mixer *mixer, char *frontend_name, unsigned int rat
     uint8_t* payload = NULL;
     size_t payloadSize = 0, padBytes = 0, paramSize, paddedSize;
 
+    /* set PARAM_ID_MFC_OUTPUT_MEDIA_FORMAT */
     
     // Create payload container
     paramSize = sizeof(struct param_id_mfc_output_media_fmt_t) + 
@@ -1035,70 +1113,22 @@ int configure_agm_mfc(struct mixer *mixer, char *frontend_name, unsigned int rat
     printf("---\t\tmfc_outMediaFmt->bit_width: %d\n", bits);
     printf("---\t\tmfc_outMediaFmt->num_channels: %d\n", channels);
 
-    ret = set_agm_param(mixer, frontend_name, (void *)payload, paddedSize);
+    ret = set_agm_param(frontend_name, (void *)payload, paddedSize);
 
     free(payload);
     return ret;
 }
 
-int configure_agm_dma_sink(struct mixer *mixer, char *frontend_name, unsigned int card_id, unsigned int device_id, 
-                           unsigned int frame_size_fcr, uint32_t miid)
+int configure_agm_dma_sink(char *frontend_name, unsigned int frame_size_fcr, uint32_t miid)
 {
     printf("---configure_agm_dma_sink\n");
 
     int ret = 0;
     struct apm_module_param_data_t* header = NULL;
-    // struct param_id_alsa_device_intf_cfg_t *alsaSink_devIntfCfg;
     struct param_id_hw_ep_frame_size_factor_t *dmaSink_frmSizeFcr;
+    // struct param_id_hw_ep_mf_cfg_t *dmaSink_mfCfg;
     uint8_t* payload = NULL;
     size_t payloadSize = 0, padBytes = 0, paramSize, paddedSize;
-
-
-    /* set PARAM_ID_ALSA_DEVICE_INTF_CFG */
-
-    // Create payload container
-    // paramSize =  sizeof(struct param_id_alsa_device_intf_cfg_t);
-    // payload = create_agm_param_payload(paramSize, &payloadSize, &padBytes);
-    // if (!payload) {
-    //     return -ENOMEM;
-    // }
-
-    // // Fill header
-    // header = (struct apm_module_param_data_t*)payload;
-    // header->module_instance_id = miid;
-    // header->param_id = PARAM_ID_ALSA_DEVICE_INTF_CFG;
-    // header->error_code = 0x0;
-    // header->param_size = paramSize;
-
-    // // Fill actual param's components
-    // alsaSink_devIntfCfg = (struct param_id_alsa_device_intf_cfg_t*)(payload +
-    //            sizeof(struct apm_module_param_data_t));
-    // alsaSink_devIntfCfg->card_id = card_id;
-    // alsaSink_devIntfCfg->device_id = device_id;
-    // alsaSink_devIntfCfg->period_count = period_cnt;
-    // alsaSink_devIntfCfg->start_threshold = 0;    // auto
-    // alsaSink_devIntfCfg->stop_threshold = 0;     // auto
-    // alsaSink_devIntfCfg->silence_threshold = 0;  // auto
-    
-    // paddedSize = payloadSize + padBytes;
-
-    // printf("---\tpayload:\n");
-    // printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
-    // printf("---\t\theader->param_id: 0x%X (PARAM_ID_ALSA_DEVICE_INTF_CFG)\n", header->param_id);
-    // printf("---\t\talsaSink_devIntfCfg->card_id: %d\n", card_id);
-    // printf("---\t\talsaSink_devIntfCfg->device_id: %d\n", device_id);
-    // printf("---\t\talsaSink_devIntfCfg->period_count: %d\n", period_cnt);
-    // printf("---\t\talsaSink_devIntfCfg->start_threshold: %d\n", 0);
-    // printf("---\t\talsaSink_devIntfCfg->stop_threshold: %d\n", 0);
-    // printf("---\t\talsaSink_devIntfCfg->silence_threshold: %d\n", 0);
-
-    // ret = set_agm_param(mixer, frontend_name, (void *)payload, paddedSize);
-
-    // free(payload);
-
-    // if (ret != 0) {
-    //     return ret;  // Exit early if first param fails
-    // }
 
 
     /* set PARAM_ID_HW_EP_FRAME_SIZE_FACTOR */
@@ -1127,14 +1157,54 @@ int configure_agm_dma_sink(struct mixer *mixer, char *frontend_name, unsigned in
     printf("---\t\theader->param_id: 0x%X (PARAM_ID_HW_EP_FRAME_SIZE_FACTOR)\n", header->param_id);
     printf("---\t\tdmaSink_frmSizeFcr->frame_size_factor: %d\n", frame_size_fcr);
 
-    ret = set_agm_param(mixer, frontend_name, (void *)payload, paddedSize);
+    ret = set_agm_param(frontend_name, (void *)payload, paddedSize);
 
     free(payload);
+
+    // if (ret != 0) {
+    //     return ret;  // Exit early if first param fails
+    // }
+
+
+    // /* set PARAM_ID_HW_EP_MF_CFG */
+
+    // paramSize = sizeof(struct param_id_hw_ep_mf_cfg_t);
+    // payload = create_agm_param_payload(paramSize, &payloadSize, &padBytes);
+    // if (!payload) {
+    //     return -ENOMEM;
+    // }
+
+    // header = (struct apm_module_param_data_t*)payload;
+    // header->module_instance_id = miid;
+    // header->param_id = PARAM_ID_HW_EP_MF_CFG;
+    // header->error_code = 0x0;
+    // header->param_size = paramSize;
+
+    // dmaSink_mfCfg = (struct param_id_hw_ep_mf_cfg_t*)(payload +
+    //            sizeof(struct apm_module_param_data_t));
+    // dmaSink_mfCfg->sample_rate  = 44100;
+    // dmaSink_mfCfg->bit_width    = 32;
+    // dmaSink_mfCfg->num_channels = 1;
+    // dmaSink_mfCfg->data_format  = 1;
+
+    // paddedSize = payloadSize + padBytes;
+
+    // printf("---\tpayload:\n");
+    // printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
+    // printf("---\t\theader->param_id: 0x%X (PARAM_ID_HW_EP_MF_CFG)\n", header->param_id);
+    // printf("---\t\tdmaSink_mfCfg->sample_rate:  %u\n", dmaSink_mfCfg->sample_rate);
+    // printf("---\t\tdmaSink_mfCfg->bit_width:    %u\n", dmaSink_mfCfg->bit_width);
+    // printf("---\t\tdmaSink_mfCfg->num_channels: %u\n", dmaSink_mfCfg->num_channels);
+    // printf("---\t\tdmaSink_mfCfg->data_format:  %u\n", dmaSink_mfCfg->data_format);
+
+    // ret = set_agm_param(frontend_name, (void *)payload, paddedSize);
+
+    // free(payload);
 
     return ret;
 }
 
-int configure_agm_alsa_sink(struct mixer *mixer, char *frontend_name, unsigned int card_id, unsigned int device_id, 
+int configure_agm_alsa_sink(char *frontend_name, unsigned int card_id, unsigned int device_id,
                             unsigned int period_cnt, unsigned int frame_size_fcr, uint32_t miid)
 {
     printf("---configure_agm_alsa_sink\n");
@@ -1185,7 +1255,7 @@ int configure_agm_alsa_sink(struct mixer *mixer, char *frontend_name, unsigned i
     printf("---\t\talsaSink_devIntfCfg->stop_threshold: %d\n", 0);
     printf("---\t\talsaSink_devIntfCfg->silence_threshold: %d\n", 0);
 
-    ret = set_agm_param(mixer, frontend_name, (void *)payload, paddedSize);
+    ret = set_agm_param(frontend_name, (void *)payload, paddedSize);
 
     free(payload);
 
@@ -1220,15 +1290,169 @@ int configure_agm_alsa_sink(struct mixer *mixer, char *frontend_name, unsigned i
     printf("---\t\theader->param_id: 0x%X (PARAM_ID_HW_EP_FRAME_SIZE_FACTOR)\n", header->param_id);
     printf("---\t\talsaSink_frmSizeFcr->frame_size_factor: %d\n", frame_size_fcr);
 
-    ret = set_agm_param(mixer, frontend_name, (void *)payload, paddedSize);
+    ret = set_agm_param(frontend_name, (void *)payload, paddedSize);
 
     free(payload);
 
     return ret;
 }
 
+int inspect_agm_mfc(char *frontend_name, uint32_t miid)
+{
+    printf("---inspect_agm_mfc\n");
+
+    int ret = 0;
+    struct apm_module_param_data_t *get_header = NULL;
+    struct param_id_mfc_output_media_fmt_t *mfc_fmt = NULL;
+    uint8_t *get_payload = NULL;
+    size_t get_paramSize, get_payloadSize = 0, get_padBytes = 0, get_paddedSize;
+
+    /* get PARAM_ID_MFC_OUTPUT_MEDIA_FORMAT */
+    get_paramSize = sizeof(struct param_id_mfc_output_media_fmt_t) + sizeof(uint16_t) * 16;
+    get_payload = create_agm_param_payload(get_paramSize, &get_payloadSize, &get_padBytes);
+    if (!get_payload) {
+        return -ENOMEM;
+    }
+
+    get_header = (struct apm_module_param_data_t *)get_payload;
+    get_header->module_instance_id = miid;
+    get_header->param_id            = PARAM_ID_MFC_OUTPUT_MEDIA_FORMAT;
+    get_header->error_code          = 0x0;
+    get_header->param_size          = get_paramSize;
+
+    get_paddedSize = get_payloadSize + get_padBytes;
+
+    ret = get_agm_param(frontend_name, (void *)get_payload, get_paddedSize);
+    if (ret == 0) {
+        get_header = (struct apm_module_param_data_t *)get_payload;
+        printf("---\tresponse header:\n");
+        printf("---\t\tmodule_instance_id: 0x%X\n", get_header->module_instance_id);
+        printf("---\t\tparam_id:           0x%X\n", get_header->param_id);
+        printf("---\t\tparam_size:         %u\n",   get_header->param_size);
+        printf("---\t\terror_code:         0x%X\n", get_header->error_code);
+
+        if (get_header->error_code == 0 && get_header->param_size > 0) {
+            mfc_fmt = (struct param_id_mfc_output_media_fmt_t *)(get_payload +
+                        sizeof(struct apm_module_param_data_t));
+            printf("---\tPARAM_ID_MFC_OUTPUT_MEDIA_FORMAT:\n");
+            printf("---\t\tsampling_rate: %d\n", mfc_fmt->sampling_rate);
+            printf("---\t\tbit_width:     %d\n", mfc_fmt->bit_width);
+            printf("---\t\tnum_channels:  %d\n", mfc_fmt->num_channels);
+        } else {
+            printf("---\tget failed: error_code=0x%X, param_size=%u\n",
+                get_header->error_code, get_header->param_size);
+        }
+    }
+
+    free(get_payload);
+
+    return ret;
+}
 
 
+int inspect_agm_dma_sink(char *frontend_name, uint32_t miid)
+{
+    printf("---inspect_agm_dma_sink\n");
+
+    int ret = 0;
+    
+    
+    /* get PARAM_ID_HW_EP_FRAME_SIZE_FACTOR */
+    {
+        struct apm_module_param_data_t *get_header = NULL;
+        struct param_id_hw_ep_frame_size_factor_t *fsf = NULL;
+        uint8_t *get_payload = NULL;
+        size_t get_paramSize, get_payloadSize = 0, get_padBytes = 0, get_paddedSize;
+
+        get_paramSize = sizeof(struct param_id_hw_ep_frame_size_factor_t);
+        get_payload = create_agm_param_payload(get_paramSize, &get_payloadSize, &get_padBytes);
+        if (!get_payload) {
+            return -ENOMEM;
+        }
+
+        get_header = (struct apm_module_param_data_t *)get_payload;
+        get_header->module_instance_id = miid;
+        get_header->param_id            = PARAM_ID_HW_EP_FRAME_SIZE_FACTOR;
+        get_header->error_code          = 0x0;
+        get_header->param_size          = get_paramSize;
+
+        get_paddedSize = get_payloadSize + get_padBytes;
+
+        ret = get_agm_param(frontend_name, (void *)get_payload, get_paddedSize);
+        if (ret == 0) {
+            get_header = (struct apm_module_param_data_t *)get_payload;
+            printf("---\tresponse header (FRAME_SIZE_FACTOR):\n");
+            printf("---\t\tmodule_instance_id: 0x%X\n", get_header->module_instance_id);
+            printf("---\t\tparam_id:           0x%X\n", get_header->param_id);
+            printf("---\t\tparam_size:         %u\n",   get_header->param_size);
+            printf("---\t\terror_code:         0x%X\n", get_header->error_code);
+
+            if (get_header->error_code == 0 && get_header->param_size > 0) {
+                fsf = (struct param_id_hw_ep_frame_size_factor_t *)(get_payload +
+                       sizeof(struct apm_module_param_data_t));
+                printf("---\tPARAM_ID_HW_EP_FRAME_SIZE_FACTOR:\n");
+                printf("---\t\tframe_size_factor: %d\n", fsf->frame_size_factor);
+            } else {
+                printf("---\tget failed: error_code=0x%X, param_size=%u\n",
+                       get_header->error_code, get_header->param_size);
+            }
+        }
+
+        free(get_payload);
+    }
+
+
+    /* get PARAM_ID_HW_EP_MF_CFG */
+    {
+        struct apm_module_param_data_t *get_header = NULL;
+        struct param_id_hw_ep_mf_cfg_t *mf_cfg = NULL;
+        uint8_t *get_payload = NULL;
+        size_t get_paramSize, get_payloadSize = 0, get_padBytes = 0, get_paddedSize;
+
+        get_paramSize = sizeof(struct param_id_hw_ep_mf_cfg_t);
+        get_payload = create_agm_param_payload(get_paramSize, &get_payloadSize, &get_padBytes);
+        if (!get_payload) {
+            return -ENOMEM;
+        }
+
+        get_header = (struct apm_module_param_data_t *)get_payload;
+        get_header->module_instance_id = miid;
+        get_header->param_id            = PARAM_ID_HW_EP_MF_CFG;
+        get_header->error_code          = 0x0;
+        get_header->param_size          = get_paramSize;
+
+        get_paddedSize = get_payloadSize + get_padBytes;
+
+        // Issues the get request and reads the response into the same buffer.
+        ret = get_agm_param(frontend_name, (void *)get_payload, get_paddedSize);
+        if (ret == 0) {
+            get_header = (struct apm_module_param_data_t *)get_payload;
+            printf("---\tresponse header:\n");
+            printf("---\t\tmodule_instance_id: 0x%X\n", get_header->module_instance_id);
+            printf("---\t\tparam_id:           0x%X\n", get_header->param_id);
+            printf("---\t\tparam_size:         %u\n",   get_header->param_size);
+            printf("---\t\terror_code:         0x%X\n", get_header->error_code);
+
+            if (get_header->error_code == 0 && get_header->param_size > 0) {
+                mf_cfg = (struct param_id_hw_ep_mf_cfg_t *)(get_payload +
+                        sizeof(struct apm_module_param_data_t));
+                printf("---\tPARAM_ID_HW_EP_MF_CFG:\n");
+                printf("---\t\tsample_rate:  0x%08X (%u)\n", mf_cfg->sample_rate, mf_cfg->sample_rate);
+                printf("---\t\tbit_width:    0x%04X (%u)\n", mf_cfg->bit_width, mf_cfg->bit_width);
+                printf("---\t\tnum_channels: 0x%04X (%u)\n", mf_cfg->num_channels, mf_cfg->num_channels);
+                printf("---\t\tdata_format:  0x%08X\n", mf_cfg->data_format);
+            } else {
+                printf("---\tget failed: error_code=0x%X, param_size=%u\n",
+                    get_header->error_code, get_header->param_size);
+            }
+        }
+
+        free(get_payload);
+    }
+
+
+    return ret;
+}
 
 
 
@@ -1270,7 +1494,7 @@ int init_agm_mixer(unsigned int virtual_card, char *frontend_name, char *backend
     }
 
     // intialize backend via mixer with its standard configuration
-    if (set_agm_backend_config(g_mixer, g_backend_name, &g_backend_config)) {
+    if (set_agm_backend_config(g_backend_name, &g_backend_config)) {
         printf("Failed to configure backend %s\n", g_backend_name);
         ret = -1;
         goto done;
@@ -1333,14 +1557,14 @@ int init_agm_mixer(unsigned int virtual_card, char *frontend_name, char *backend
     }
 
     // build graph
-    if (set_agm_graph(g_mixer, g_frontend_name, graph_kv, num_graph_kv)) {
+    if (set_agm_graph(g_frontend_name, graph_kv, num_graph_kv)) {
         printf("Failed to build graph for use case\n");
         ret = -1;
         goto done;
     }
 
     // connect frontend and backend to graph
-    if (connect_agm_frontend_to_backend(g_mixer, g_frontend_name, g_backend_name, true)) {
+    if (connect_agm_frontend_to_backend(g_frontend_name, g_backend_name, true)) {
         printf("Failed to connect pcm to audio interface\n");
         ret = -1;
         goto done;
@@ -1383,10 +1607,10 @@ int configure_agm_modules(unsigned int physical_card, unsigned int physical_devi
     uint32_t mid = 0;
 
     // retrieve the instance id of the PSPD MFC module...
-    if (get_agm_module_iid(g_mixer, g_frontend_name, g_backend_name, PER_STREAM_PER_DEVICE_MFC, &miid, &mid) == 0) {
+    if (get_agm_module_iid(g_frontend_name, g_backend_name, PER_STREAM_PER_DEVICE_MFC, &miid, &mid) == 0) {
         printf("\n");
-         // ...and use it to configure one of its params
-        if (configure_agm_mfc(g_mixer, g_frontend_name, g_backend_config.rate, 
+        // ...and use it to configure one of its params
+        if (configure_agm_mfc(g_frontend_name, g_backend_config.rate,
                               g_backend_config.ch, g_backend_config.bits, miid)) {
             printf("Failed to configure pspd mfc\n");
             return -1;
@@ -1402,21 +1626,20 @@ int configure_agm_modules(unsigned int physical_card, unsigned int physical_devi
     // same with the device hardware endpoint rx (sink) module found in the device subgraph...
     // skip if the physical PCM is already open by another instance (can only be configured once, before pcm_start)
     if (!is_alsa_pcm_open(physical_card, physical_device)) {
-        if (get_agm_module_iid(g_mixer, g_frontend_name, g_backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) == 0) {
+        if (get_agm_module_iid(g_frontend_name, g_backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) == 0) {
             printf("\n");
 
-            // if the module is Codec DMA Sink
-            if(mid == 0x07001023)  {
-                if (configure_agm_dma_sink(g_mixer, g_frontend_name, physical_card, physical_device,
-                                           frame_size_fcr, miid)) {
+            // different configurations for different sink modules
+            if(mid == MODULE_ID_CODEC_DMA_SINK)  {
+                if (configure_agm_dma_sink(g_frontend_name, frame_size_fcr, miid)) {
                     printf("Failed to configure Coced DMA Sink\n");
                     return -1;
                 }
             }
             // if the module is Alsa Device Sink
-            else if(mid == 0x18000002) {
+            else if(mid == MODULE_ID_ALSA_DEVICE_SINK) {
                 // ...we configure two of its params
-                if (configure_agm_alsa_sink(g_mixer, g_frontend_name, physical_card, physical_device,
+                if (configure_agm_alsa_sink(g_frontend_name, physical_card, physical_device,
                                             period_count, frame_size_fcr, miid)) {
                     printf("Failed to configure Alsa Device Sink\n");
                     return -1;
@@ -1437,11 +1660,53 @@ int configure_agm_modules(unsigned int physical_card, unsigned int physical_devi
     return 0;
 }
 
+int inspect_agm_modules()
+{
+    uint32_t miid = 0;
+    uint32_t mid = 0;
 
-void cleanup_agm(void)
+    // retrieve the instance id of the PSPD MFC module...
+    if (get_agm_module_iid(g_frontend_name, g_backend_name, PER_STREAM_PER_DEVICE_MFC, &miid, &mid) == 0) {
+        printf("\n");
+        if (inspect_agm_mfc(g_frontend_name, miid)) {
+            printf("Failed to configure pspd mfc\n");
+            return -1;
+        }    
+    } 
+    else {
+        printf("MFC not present in this graph\n");
+        //return -1; //VIC we can live without an MFC module
+    }
+    printf("\n");
+
+    
+    // same with the device hardware endpoint rx (sink) module found in the device subgraph...
+    if (get_agm_module_iid(g_frontend_name, g_backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) == 0) {
+        printf("\n");
+        if(mid == MODULE_ID_CODEC_DMA_SINK) {
+            // ...and use it to configure one of its params
+            if (inspect_agm_dma_sink(g_frontend_name, miid)) {
+                printf("Failed to inspect Coced DMA Sink\n");
+                return -1;
+            }    
+        }
+        else {
+            return 0; //VIC for now we don't inspect anything else
+        }
+    } 
+    else {
+        printf("Device Hardware Endpoint Rx not present in this graph!\n");
+        return -1; //VIC a module tagged as DEVICE_HW_ENDPOINT_RX is absolutely needed for playback
+    }
+    printf("\n");
+ 
+    return 0;
+}
+
+void cleanup_agm_mixer(void)
 {   
     if (g_mixer != NULL) {
-        connect_agm_frontend_to_backend(g_mixer, g_frontend_name, g_backend_name, false);
+        connect_agm_frontend_to_backend(g_frontend_name, g_backend_name, false);
         mixer_close(g_mixer);
     }
 

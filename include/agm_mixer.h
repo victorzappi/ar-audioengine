@@ -45,7 +45,9 @@ int init_agm_mixer(unsigned int virtual_card, char *frontend_name, char *backend
 int configure_agm_modules(unsigned int physical_card, unsigned int physical_device, unsigned int period_count, 
                   unsigned int frame_size_fcr);
 
-void cleanup_agm(void);
+int inspect_agm_modules();
+
+void cleanup_agm_mixer(void);
 
 
 //-------------------------------
