@@ -13,13 +13,7 @@ configure, build and clean commands in CMakeLists.txt
 */
 
 // next steps:
-// [?]_simplify formats:
-// __remove support for float format
-// __remove support for BE formats [we use signed int LE only]
-// __and make cmd line format preset selection instead of bits
-// __assume always LE arch
-// _at this point can use a simplified fromFloatToRaw_littleEndian() for all, with a single memcpy per sample [byte size of transfer depends on format]
-// _but make also an optmized version ---> 8, 16, 24/32 can be done seamlessly as in LDSP standard case [by casting rawBUffer as uint_8, uint_16 and uint_32 ---> 3 cases], while 24_3 can stick to single memcpy [3 bytes] per sample
+// _make cmd line format preset selection instead of bits
 
 #include <signal.h>
 //#include <stdbool.h> //VIC needed only in C
@@ -40,31 +34,25 @@ configure, build and clean commands in CMakeLists.txt
 #define OPTPARSE_IMPLEMENTATION
 #include "optparse.h"
 
-#define DEFAULT_PLAYBACK_PATH "speaker"
+#define DEFAULT_PLAYBACK_MIXER_PATH "speaker"
 
 // ---------------------------------------------------------------------------
 // types & globals
 // ---------------------------------------------------------------------------
 
-// engine configuration. most fields are command-line args (the flag that sets
-// each is noted); the rest are either derived at runtime or fixed constants.
-struct settings {
-    // routing
-    unsigned int virtual_card;     // CLI -c
+// one audio direction (playback or capture): device, routing names, mixer
+// path, graph keys, and pcm config. params shared across both directions live
+// in struct settings. CLI flags noted are the playback ones; capture gets its
+// own flags when it is wired in.
+struct pcm_stream {
     unsigned int virtual_device;   // CLI -d
-    unsigned int physical_card;    // CLI -C
     unsigned int physical_device;  // CLI -D
-    char *frontend_name;           // CLI -F (optional; auto-detected if unset)
-    char *backend_name;            // CLI -B (optional; auto-detected if unset)
-    char *playback_path;           // CLI -o (hardware mixer path)
+    char *frontend_name;           // CLI -F; else auto from (virtual_card, virtual_device)
+    char *backend_name;            // CLI -B; else auto from (physical_card, physical_device, dir)
+    char *mixer_path;              // CLI -o (hardware mixer path)
+    int flags;                     // PCM_OUT / PCM_IN -- also encodes direction
 
-    unsigned int frame_size_fcr;   // CLI -s
-
-    // pcm/frontend params
-    struct pcm_config config;      // CLI -p/-q/-n/-r (period/count/channels/rate); format derived, thresholds fixed
-    unsigned int bits;             // CLI -b
-    bool is_float;                 // CLI -f
-    int flags;                     // fixed: PCM_OUT
+    struct pcm_config config;      // CLI -p/-q/-n/-r; shared params + this stream's channels
 
     // graph params: CLI args set the kv *values* (-w/-i/-x/-y/-z), the keys are fixed
     struct agm_key_value stream_kv;
@@ -72,6 +60,20 @@ struct settings {
     struct agm_key_value streampp_kv;
     struct agm_key_value devicepp_kv;
     struct agm_key_value device_kv;
+};
+
+// engine configuration. shared fields are command-line args (the flag that sets
+// each is noted); per-direction fields live in the pcm_stream(s).
+struct settings {
+    // shared across both directions
+    unsigned int virtual_card;     // CLI -c
+    unsigned int physical_card;    // CLI -C
+    unsigned int bits;             // CLI -b
+    bool is_float;                 // CLI -f
+    unsigned int frame_size_fcr;   // CLI -s
+    bool full_duplex;              // global toggle; gates capture (wired with capture step)
+
+    struct pcm_stream playback;    // PCM_OUT
 };
 
 struct pcm_ctx {
@@ -102,57 +104,61 @@ void byteSplit_bigEndian(struct pcm_ctx *ctx, unsigned char *sampleBytes, int va
 // set the defaults; CLI args overwrite the relevant fields in the optparse loop
 void init_settings(struct settings *settings)
 {
+    // shared across both directions
     settings->virtual_card = 100;
-    settings->virtual_device = 100;
     settings->physical_card = 0;
-    settings->physical_device = 0;
-    settings->frontend_name = nullptr; 
-    settings->backend_name = nullptr;
-    settings->playback_path = strdup(DEFAULT_PLAYBACK_PATH);
-
-    settings->frame_size_fcr = 1;
-
-    settings->flags = PCM_OUT;
-    settings->config.period_size = 960;
-    settings->config.period_count = 4;
-    settings->config.channels = 2;
-    settings->config.rate = 48000;
-    settings->config.format = PCM_FORMAT_INVALID;  // derived from bits/is_float in init_ctx
-
-    // these can be left to default, because ARE does not support aumtomatic pcm start/stop
-    settings->config.silence_threshold = 0;
-    settings->config.silence_size = 0;
-    settings->config.stop_threshold = 0;
-    settings->config.start_threshold = 0;
-
     settings->bits = 16;
     settings->is_float = false;
+    settings->frame_size_fcr = 1;
+    settings->full_duplex = false;
+
+    // playback stream
+    struct pcm_stream *playback = &settings->playback;
+
+    playback->virtual_device = 100;
+    playback->physical_device = 0;
+    playback->frontend_name = nullptr;
+    playback->backend_name = nullptr;
+    playback->mixer_path = strdup(DEFAULT_PLAYBACK_MIXER_PATH);
+    playback->flags = PCM_OUT;
+
+    playback->config.period_size = 960;
+    playback->config.period_count = 4;
+    playback->config.channels = 2;
+    playback->config.rate = 48000;
+    playback->config.format = PCM_FORMAT_INVALID;  // derived from bits/is_float in init_ctx
+
+    // these can be left to default, because ARE does not support aumtomatic pcm start/stop
+    playback->config.silence_threshold = 0;
+    playback->config.silence_size = 0;
+    playback->config.stop_threshold = 0;
+    playback->config.start_threshold = 0;
 
     // we set these to load the graph for the default RB3 use case
-    settings->stream_kv.key     = STREAMRX;
-    settings->stream_kv.value   = PCM_LL_PLAYBACK;
+    playback->stream_kv.key     = STREAMRX;
+    playback->stream_kv.value   = PCM_LL_PLAYBACK;
 
-    settings->streampp_kv.key   = STREAMPP_RX;
-    settings->streampp_kv.value = 0;
+    playback->streampp_kv.key   = STREAMPP_RX;
+    playback->streampp_kv.value = 0;
 
-    settings->instance_kv.key   = INSTANCE;
-    settings->instance_kv.value = INSTANCE_1;
+    playback->instance_kv.key   = INSTANCE;
+    playback->instance_kv.value = INSTANCE_1;
 
-    settings->devicepp_kv.key   = DEVICEPP_RX;
-    settings->devicepp_kv.value = DEVICEPP_RX_AUDIO_MBDRC;
+    playback->devicepp_kv.key   = DEVICEPP_RX;
+    playback->devicepp_kv.value = DEVICEPP_RX_AUDIO_MBDRC;
 
-    settings->device_kv.key     = DEVICERX;
-    settings->device_kv.value   = SPEAKER;
+    playback->device_kv.key     = DEVICERX;
+    playback->device_kv.value   = SPEAKER;
 }
 
 void cleanup_settings(struct settings *settings)
 {
-    if (settings->frontend_name != nullptr)
-        free(settings->frontend_name);
-    if (settings->backend_name != nullptr)
-        free(settings->backend_name);
-    if (settings->playback_path != nullptr)
-        free(settings->playback_path);
+    if (settings->playback.frontend_name != nullptr)
+        free(settings->playback.frontend_name);
+    if (settings->playback.backend_name != nullptr)
+        free(settings->playback.backend_name);
+    if (settings->playback.mixer_path != nullptr)
+        free(settings->playback.mixer_path);
 }
 
 // ---------------------------------------------------------------------------
@@ -247,34 +253,35 @@ static int set_backend_name(unsigned int physical_card, unsigned int physical_de
     return ret;
 }
 
-static int init_front_and_backend(const char *cards_xml_path, struct settings *settings)
+static int resolve_stream_names(const char *cards_xml_path, unsigned int virtual_card,
+                                unsigned int physical_card, struct pcm_stream *stream)
 {
     bool auto_retrieve;
 
-    auto_retrieve = (settings->frontend_name == nullptr);
+    auto_retrieve = (stream->frontend_name == nullptr);
     if (auto_retrieve) {
-        if (set_frontend_name(cards_xml_path, settings->virtual_card, settings->virtual_device,
-                            &settings->frontend_name) != 0) {
+        if (set_frontend_name(cards_xml_path, virtual_card, stream->virtual_device,
+                            &stream->frontend_name) != 0) {
             fprintf(stderr, "Frontend not found for virtual card %u device %u in \"%s\"\n",
-                    settings->virtual_card, settings->virtual_device, cards_xml_path);
+                    virtual_card, stream->virtual_device, cards_xml_path);
             return -1;
         }
     }
     printf("virtual card: %u, device: %u -> frontend: %s%s\n",
-            settings->virtual_card, settings->virtual_device,
-            settings->frontend_name, auto_retrieve ? " (auto-retrieved)" : "");
+            virtual_card, stream->virtual_device,
+            stream->frontend_name, auto_retrieve ? " (auto-retrieved)" : "");
 
-    auto_retrieve = (settings->backend_name == nullptr);
+    auto_retrieve = (stream->backend_name == nullptr);
     if (auto_retrieve) {
-        if (set_backend_name(settings->physical_card, settings->physical_device, &settings->backend_name) != 0) {
+        if (set_backend_name(physical_card, stream->physical_device, &stream->backend_name) != 0) {
             fprintf(stderr, "Backend not found for physical card %u device %u\n",
-                    settings->physical_card, settings->physical_device);
+                    physical_card, stream->physical_device);
             return -2;
         }
     }
     printf("physical card: %u, device: %u -> backend: %s%s\n\n",
-            settings->physical_card, settings->physical_device,
-            settings->backend_name, auto_retrieve ? " (auto-retrieved)" : "");
+            physical_card, stream->physical_device,
+            stream->backend_name, auto_retrieve ? " (auto-retrieved)" : "");
     return 0;
 }
 
@@ -282,12 +289,9 @@ static int init_front_and_backend(const char *cards_xml_path, struct settings *s
 // pcm context & stream lifecycle
 // ---------------------------------------------------------------------------
 
-static int init_ctx(struct pcm_ctx* ctx, struct settings *settings)
+static int init_ctx(struct pcm_ctx* ctx, struct settings *settings, struct pcm_stream *stream)
 {
-    struct pcm_config *config = &settings->config;
-
-    size_t raw_buffer_size = 0;
-    size_t audio_buffer_size = 0;
+    struct pcm_config *config = &stream->config;
 
     ctx->pcm = nullptr;
     ctx->audio_buffer = nullptr;
@@ -323,21 +327,17 @@ static int init_ctx(struct pcm_ctx* ctx, struct settings *settings)
 
     ctx->num_samples = config->period_size * config->channels;
 
-    audio_buffer_size = ctx->num_samples*sizeof(float);
-    ctx->audio_buffer = (float*)malloc(audio_buffer_size); //TODO calloc
+    ctx->audio_buffer = (float*)calloc(ctx->num_samples, sizeof(float));
     if ( !(ctx->audio_buffer) ) {
-        fprintf(stderr, "unable to allocate %zu bytes\n", audio_buffer_size);
+        fprintf(stderr, "unable to allocate %zu bytes\n", ctx->num_samples * sizeof(float));
         return -1;
     }
-    memset(ctx->audio_buffer, 0, audio_buffer_size);
 
-    raw_buffer_size = ctx->num_samples * ctx->phys_bytes_per_sample;
-    ctx->raw_buffer = (char*)malloc(raw_buffer_size); //TODO calloc
+    ctx->raw_buffer = (char*)calloc(ctx->num_samples, ctx->phys_bytes_per_sample);
     if ( !(ctx->raw_buffer) ) {
-        fprintf(stderr, "unable to allocate %zu bytes\n", raw_buffer_size);
+        fprintf(stderr, "unable to allocate %u bytes\n", ctx->num_samples * ctx->phys_bytes_per_sample);
         return -1;
     }
-    memset(ctx->raw_buffer, 0, raw_buffer_size);
 
     return 0;
 }
@@ -355,30 +355,30 @@ void cleanup_ctx(struct pcm_ctx *ctx)
     }
 }
 
-static int init_pcm(struct pcm_ctx* ctx, struct settings *settings)
+static int init_pcm(struct pcm_ctx* ctx, struct settings *settings, struct pcm_stream *stream)
 {
     // we cannot check the param ranges on the frontend, because it's a virtual pcm!
 
     /* open pcm */
     ctx->pcm = pcm_open(settings->virtual_card,
-                        settings->virtual_device,
-                        settings->flags,
-                        &settings->config);
+                        stream->virtual_device,
+                        stream->flags,
+                        &stream->config);
 
     if (!ctx->pcm || !pcm_is_ready(ctx->pcm)) {
         fprintf(stderr, "failed to open for pcm %u,%u. %s\n",
-                settings->virtual_card, settings->virtual_device,
+                settings->virtual_card, stream->virtual_device,
                 pcm_get_error(ctx->pcm));
         pcm_close(ctx->pcm);
         return -1;
     }
 
     printf("\nPCM (frontend) config:\n");
-    printf("  rate        %u Hz\n",     settings->config.rate);
-    printf("  channels    %u\n",        settings->config.channels);
+    printf("  rate        %u Hz\n",     stream->config.rate);
+    printf("  channels    %u\n",        stream->config.channels);
     printf("  format      %u-bit %s\n", settings->bits, settings->is_float ? "float" : "signed int");
-    printf("  period size %u frames\n", settings->config.period_size);
-    printf("  periods     %u\n\n",      settings->config.period_count);
+    printf("  period size %u frames\n", stream->config.period_size);
+    printf("  periods     %u\n\n",      stream->config.period_count);
 
     return 0;
 }
@@ -590,21 +590,21 @@ int main(int argc, char **argv)
             }
             break;
         case 'd':
-            if (sscanf(opts.optarg, "%u", &settings.virtual_device) != 1) {
+            if (sscanf(opts.optarg, "%u", &settings.playback.virtual_device) != 1) {
                 fprintf(stderr, "failed parsing virtual device number '%s'\n", argv[1]);
                 return EXIT_FAILURE;
             }
             break;
         case 'F':
-            settings.frontend_name = strdup(opts.optarg);
-            if (settings.frontend_name == nullptr) {
+            settings.playback.frontend_name = strdup(opts.optarg);
+            if (settings.playback.frontend_name == nullptr) {
                 fprintf(stderr, "failed parsing frontend name '%s'\n", argv[1]);
                 return EXIT_FAILURE;
             }
             break;
         case 'B':
-            settings.backend_name = strdup(opts.optarg);
-            if (settings.backend_name == nullptr) {
+            settings.playback.backend_name = strdup(opts.optarg);
+            if (settings.playback.backend_name == nullptr) {
                 fprintf(stderr, "failed parsing backend name '%s'\n", argv[1]);
                 return EXIT_FAILURE;
             }
@@ -616,31 +616,31 @@ int main(int argc, char **argv)
             }
             break;
         case 'D':
-            if (sscanf(opts.optarg, "%u", &settings.physical_device) != 1) {
+            if (sscanf(opts.optarg, "%u", &settings.playback.physical_device) != 1) {
                 fprintf(stderr, "failed parsing physical device number '%s'\n", argv[1]);
                 return EXIT_FAILURE;
             }
             break;
         case 'p':
-            if (sscanf(opts.optarg, "%u", &settings.config.period_size) != 1) {
+            if (sscanf(opts.optarg, "%u", &settings.playback.config.period_size) != 1) {
                 fprintf(stderr, "failed parsing period size '%s'\n", argv[1]);
                 return EXIT_FAILURE;
             }
             break;
         case 'q':
-            if (sscanf(opts.optarg, "%u", &settings.config.period_count) != 1) {
+            if (sscanf(opts.optarg, "%u", &settings.playback.config.period_count) != 1) {
                 fprintf(stderr, "failed parsing period count '%s'\n", argv[1]);
                 return EXIT_FAILURE;
             }
             break;
         case 'n':
-            if (sscanf(opts.optarg, "%u", &settings.config.channels) != 1) {
+            if (sscanf(opts.optarg, "%u", &settings.playback.config.channels) != 1) {
                 fprintf(stderr, "failed parsing channel count '%s'\n", argv[1]);
                 return EXIT_FAILURE;
             }
             break;
         case 'r':
-            if (sscanf(opts.optarg, "%u", &settings.config.rate) != 1) {
+            if (sscanf(opts.optarg, "%u", &settings.playback.config.rate) != 1) {
                 fprintf(stderr, "failed parsing rate '%s'\n", argv[1]);
                 return EXIT_FAILURE;
             }
@@ -662,10 +662,10 @@ int main(int argc, char **argv)
             break;
         case 'w':
             /* Try to parse as number first, as both decimal and hex */
-            if (sscanf(opts.optarg, "%i", &settings.stream_kv.value) != 1) {
+            if (sscanf(opts.optarg, "%i", &settings.playback.stream_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
-                settings.stream_kv.value = get_streamrx_value(opts.optarg);
-                if (settings.stream_kv.value == 0) {
+                settings.playback.stream_kv.value = get_streamrx_value(opts.optarg);
+                if (settings.playback.stream_kv.value == 0) {
                     fprintf(stderr, "failed parsing stream key value '%s' (not a valid number or stream name)\n", opts.optarg);
                     return EXIT_FAILURE;
                 }
@@ -673,10 +673,10 @@ int main(int argc, char **argv)
             break;
         case 'x':
             /* Try to parse as number first, as both decimal and hex */
-            if (sscanf(opts.optarg, "%i", &settings.streampp_kv.value) != 1) {
+            if (sscanf(opts.optarg, "%i", &settings.playback.streampp_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
-                settings.streampp_kv.value = get_streampp_rx_value(opts.optarg);
-                if (settings.streampp_kv.value == 0) {
+                settings.playback.streampp_kv.value = get_streampp_rx_value(opts.optarg);
+                if (settings.playback.streampp_kv.value == 0) {
                     fprintf(stderr, "failed parsing streampp key value '%s' (not a valid number or streampp name)\n", opts.optarg);
                     return EXIT_FAILURE;
                 }
@@ -684,10 +684,10 @@ int main(int argc, char **argv)
             break;
         case 'y':
             /* Try to parse as number first, as both decimal and hex */
-            if (sscanf(opts.optarg, "%i", &settings.devicepp_kv.value) != 1) {
+            if (sscanf(opts.optarg, "%i", &settings.playback.devicepp_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
-                settings.devicepp_kv.value = get_device_pp_rx_value(opts.optarg);
-                if (settings.devicepp_kv.value == 0) {
+                settings.playback.devicepp_kv.value = get_device_pp_rx_value(opts.optarg);
+                if (settings.playback.devicepp_kv.value == 0) {
                     fprintf(stderr, "failed parsing devicepp key value '%s' (not a valid number or devicepp name)\n", opts.optarg);
                     return EXIT_FAILURE;
                 }
@@ -695,10 +695,10 @@ int main(int argc, char **argv)
             break;
         case 'z':
             /* Try to parse as number first, as both decimal and hex */
-            if (sscanf(opts.optarg, "%i", &settings.device_kv.value) != 1) {
+            if (sscanf(opts.optarg, "%i", &settings.playback.device_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
-                settings.device_kv.value = get_device_rx_value(opts.optarg);
-                if (settings.device_kv.value == 0) {
+                settings.playback.device_kv.value = get_device_rx_value(opts.optarg);
+                if (settings.playback.device_kv.value == 0) {
                     fprintf(stderr, "failed parsing device key value '%s' (not a valid number or device name)\n", opts.optarg);
                     return EXIT_FAILURE;
                 }
@@ -706,19 +706,19 @@ int main(int argc, char **argv)
             break;
         case 'i':
             /* Try to parse as number first, as both decimal and hex */
-            if (sscanf(opts.optarg, "%i", &settings.instance_kv.value) != 1) {
+            if (sscanf(opts.optarg, "%i", &settings.playback.instance_kv.value) != 1) {
                 /* If not a number, try to lookup as string */
-                settings.instance_kv.value = get_instance_value(opts.optarg);
-                if (settings.instance_kv.value == 0) {
+                settings.playback.instance_kv.value = get_instance_value(opts.optarg);
+                if (settings.playback.instance_kv.value == 0) {
                     fprintf(stderr, "failed parsing instance key value '%s' (not a valid number or instance name)\n", opts.optarg);
                     return EXIT_FAILURE;
                 }
             }
             break;
         case 'o':
-            free(settings.playback_path);
-            settings.playback_path = strdup(opts.optarg);
-            if (settings.playback_path == nullptr) {
+            free(settings.playback.mixer_path);
+            settings.playback.mixer_path = strdup(opts.optarg);
+            if (settings.playback.mixer_path == nullptr) {
                 fprintf(stderr, "failed parsing playback path '%s'\n", opts.optarg);
                 return EXIT_FAILURE;
             }
@@ -732,12 +732,13 @@ int main(int argc, char **argv)
         }
     }
 
-    if (init_front_and_backend(CARDS_CONF_FILE, &settings) < 0) {
+    if (resolve_stream_names(CARDS_CONF_FILE, settings.virtual_card, settings.physical_card,
+                             &settings.playback) < 0) {
         cleanup_settings(&settings);
         return EXIT_FAILURE;
     }
 
-    if (init_ctx(&ctx, &settings) < 0) {
+    if (init_ctx(&ctx, &settings, &settings.playback) < 0) {
         cleanup_ctx(&ctx);
         cleanup_settings(&settings);
         return EXIT_FAILURE;
@@ -750,23 +751,23 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    if (set_hw_mixer_path(settings.playback_path) < 0) {
+    if (set_hw_mixer_path(settings.playback.mixer_path) < 0) {
         cleanup_hw_mixer();
         cleanup_ctx(&ctx);
         cleanup_settings(&settings);
         return EXIT_FAILURE;
     }
 
-    if (init_agm_mixer(settings.virtual_card, settings.frontend_name, settings.backend_name,
-        (char *)BACKEND_CONF_FILE, settings.stream_kv, settings.instance_kv,
-        settings.streampp_kv, settings.devicepp_kv, settings.device_kv ) < 0) {
+    if (init_agm_mixer(settings.virtual_card, settings.playback.frontend_name, settings.playback.backend_name,
+        (char *)BACKEND_CONF_FILE, settings.playback.stream_kv, settings.playback.instance_kv,
+        settings.playback.streampp_kv, settings.playback.devicepp_kv, settings.playback.device_kv ) < 0) {
         cleanup_hw_mixer();
         cleanup_ctx(&ctx);
         cleanup_settings(&settings);
         return EXIT_FAILURE;
     }
 
-    if (configure_agm_modules(settings.physical_card, settings.physical_device, settings.config.period_count,
+    if (configure_agm_modules(settings.physical_card, settings.playback.physical_device, settings.playback.config.period_count,
         settings.frame_size_fcr) < 0) {
         cleanup_agm_mixer();
         cleanup_hw_mixer();
@@ -777,7 +778,7 @@ int main(int argc, char **argv)
 
 //    inspect_agm_modules();
 
-    if (init_pcm(&ctx, &settings) < 0) {
+    if (init_pcm(&ctx, &settings, &settings.playback) < 0) {
         cleanup_agm_mixer();
         cleanup_hw_mixer();
         cleanup_ctx(&ctx);
