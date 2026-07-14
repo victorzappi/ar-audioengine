@@ -13,6 +13,14 @@ configure, build and clean commands in CMakeLists.txt
 */
 
 // next steps:
+// _QNN:
+// __ merge
+// __test and debug
+// __improve alignment with new codebaase
+// __improve doc
+// _rename audio_ctx and in all projects + align code style across projects: 
+// __audio_buffer -> audio_out
+// __input_buffer -> audio_in
 // _re-introduce per-direction hardware endpoint / MFC configuration (the old
 //  configure_agm_modules, RX-only) for both RX and TX, if needed for clean audio
 
@@ -434,23 +442,24 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
 
     struct audio_ctx actx = create_audio_ctx(pb, cap);
 
-    // playback is started first
-    if (pcm_start(pb->pcm) < 0) {
-        fprintf(stderr, "playback PCM start error: %s (errno=%d)\n", pcm_get_error(cap->pcm), errno);
-        return -1;
-    }
-    if (cap && pcm_start(cap->pcm) < 0) {
-        fprintf(stderr, "capture PCM start error: %s (errno=%d)\n", pcm_get_error(cap->pcm), errno);
-        pcm_stop(pb->pcm);
-        return -1;
-    }
-
+    // user API function
     if (setup(&actx, nullptr)) {
         fprintf(stderr, "setup function failed\n");
         cleanup(&actx, nullptr);
         pcm_stop(pb->pcm);
         if (cap) pcm_stop(cap->pcm);
         return -2;
+    }
+
+    // start streams
+    if (cap && pcm_start(cap->pcm) < 0) {
+        fprintf(stderr, "capture PCM start error: %s (errno=%d)\n", pcm_get_error(cap->pcm), errno);
+        pcm_stop(pb->pcm);
+        return -1;
+    }
+    if (pcm_start(pb->pcm) < 0) {
+        fprintf(stderr, "playback PCM start error: %s (errno=%d)\n", pcm_get_error(cap->pcm), errno);
+        return -1;
     }
 
     // catch ctrl-c to shutdown cleanly
@@ -472,6 +481,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
                 fromRawToFloat_float(cap);
         }
 
+        // user API function
         render(&actx, nullptr);
 
         if (!pb->is_float)
@@ -488,6 +498,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     }
     //------------------------
 
+    // user API function
     cleanup(&actx, nullptr);
     // don't call pcm_drain(), it will seg-fault!
     pcm_stop(pb->pcm);

@@ -173,7 +173,7 @@ long options).
 | Option | Description | Default |
 |---|---|---|
 | `-D`, `--capture-virtual-device` | Virtual device number | `101` |
-| `-E`, `--capture-physical-device` | Physical device number | `0` |
+| `-E`, `--capture-physical-device` | Physical device number | `1` |
 | `-T`, `--capture-frontend-name` | Frontend device name | auto |
 | `-K`, `--capture-backend-name` | Backend device name | auto |
 | `-N`, `--capture-channels` | Number of channels | `2` |

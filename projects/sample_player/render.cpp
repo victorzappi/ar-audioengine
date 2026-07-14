@@ -24,8 +24,7 @@ int setup(struct audio_ctx *ctx, void *user_data)
 	bool autostart = true;
  	
 	// load the audio file
-	if( !player.setup(filename, loop, autostart) ) 
-	{
+	if ( !player.setup(filename, loop, autostart) ) {
     	printf("Error loading audio file '%s'\n", filename.c_str());
     	return false;
 	}
@@ -35,7 +34,7 @@ int setup(struct audio_ctx *ctx, void *user_data)
     return true;
 }
 
-void render(struct audio_ctx *ctx, void *user_data)
+void render(struct audio_ctx *ctx, void *user_data) 
 {
     for (unsigned int n=0; n<ctx->period_size; n++) {
 		// get next sample from file
