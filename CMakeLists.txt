@@ -64,6 +64,7 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 #-------------------------------------------------------------------------
 set(CORE_SRCS
     core/main.cpp
+    core/cli.cpp
     core/pcm_utils.cpp
     core/hw_mixer.cpp
     core/agm_mixer.cpp
@@ -125,7 +126,7 @@ endif()
 
 # board-specific xml file paths 
 if(NOT MIXER_PATHS)
-    set(MIXER_PATHS "/etc/mixer_paths_qcs6490_rb3gen2.xml")
+    set(MIXER_PATHS "/etc/mixer_paths_QCS6490_RB3Gen2.xml")
 endif()
 if(NOT BACKEND_CONF_FILE)
     set(BACKEND_CONF_FILE "/etc/backend_conf.xml")

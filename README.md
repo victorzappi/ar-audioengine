@@ -130,33 +130,70 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE="$OECORE_NATIVE_SYSROOT/usr/share/cmake/OE
 
 ### Options
 
+The engine runs full duplex (playback + capture) by default. Pass `-u` /
+`--no-capture` for playback only. Most options come in playback and capture
+variants, using a case-symmetric convention: playback is the lowercase letter,
+capture is the same letter upper-cased (e.g. `-b`/`-B` for bits). The rate/period
+options are set once and copied to both streams (per-stream overrides exist as
+long options).
+
+#### Shared
+
 | Option | Description | Default |
 |---|---|---|
-| `-c` | Virtual card number | `100` |
-| `-d` | Virtual device number | `100` |
-| `-C` | Physical card number | `0` |
-| `-D` | Physical device number | `0` |
-| `-B` | Backend device name | `CODEC_DMA-LPAIF_WSA-RX-0` |
-| `-p` | Period size | `960` |
-| `-q` | Period count | `4` |
-| `-n` | Number of channels | `2` |
-| `-r` | Sample rate | `48000` |
-| `-b` | Bits per sample | `16` |
-| `-f` | Use floating-point PCM | `off` |
-| `-s` | Backend period size factor (period size = 48 samples x factor) | `1` |
-| `-x` | Stream graph key value | `PCM_LL_PLAYBACK` |
-| `-y` | Stream PP graph key value | `0` |
-| `-w` | Device PP graph key value | `DEVICEPP_RX_AUDIO_MBDRC` |
-| `-z` | Device graph key value | `SPEAKER` |
-| `-i` | Instance graph key value | `INSTANCE_1` |
-| `-o` | Hardware mixer playback path | `speaker` |
+| `-c`, `--virtual-card` | Virtual card number | `100` |
+| `-s`, `--physical-card` | Physical card number | `0` |
+| `-p`, `--period-size` | Period size (both streams) | `960` |
+| `-q`, `--period-count` | Period count (both streams) | `4` |
+| `-r`, `--rate` | Sample rate (both streams) | `48000` |
+| `-u`, `--no-capture` | Disable capture (playback only) | full duplex on |
+| `-h`, `--help` | Print help and exit | |
 
-Graph key values can be passed as strings (e.g., `SPEAKER`) or hex numbers.
+#### Playback
+
+| Option | Description | Default |
+|---|---|---|
+| `-d`, `--playback-virtual-device` | Virtual device number | `100` |
+| `-e`, `--playback-physical-device` | Physical device number | `0` |
+| `-t`, `--playback-frontend-name` | Frontend device name | auto |
+| `-k`, `--playback-backend-name` | Backend device name | auto |
+| `-n`, `--playback-channels` | Number of channels | `2` |
+| `-b`, `--playback-bits` | Bits per sample | `16` |
+| `-f`, `--playback-float` | Use floating-point PCM | `off` |
+| `-o`, `--playback-path` | Hardware mixer playback path | `speaker` |
+| `-w`, `--streamrx` | Stream graph key value | `PCM_LL_PLAYBACK` |
+| `-x`, `--streampp-rx` | Stream PP graph key value | `0` |
+| `-y`, `--devicepp-rx` | Device PP graph key value | `DEVICEPP_RX_AUDIO_MBDRC` |
+| `-z`, `--devicerx` | Device graph key value | `SPEAKER` |
+| `-i`, `--instancerx` | Instance graph key value | `INSTANCE_1` |
+| `--playback-period-size` / `-count` / `--playback-rate` | Per-stream overrides of the shared values | shared |
+
+#### Capture
+
+| Option | Description | Default |
+|---|---|---|
+| `-D`, `--capture-virtual-device` | Virtual device number | `101` |
+| `-E`, `--capture-physical-device` | Physical device number | `0` |
+| `-T`, `--capture-frontend-name` | Frontend device name | auto |
+| `-K`, `--capture-backend-name` | Backend device name | auto |
+| `-N`, `--capture-channels` | Number of channels | `2` |
+| `-B`, `--capture-bits` | Bits per sample | `16` |
+| `-F`, `--capture-float` | Use floating-point PCM | `off` |
+| `-O`, `--capture-path` | Hardware mixer capture path | `speaker-mic` |
+| `-W`, `--streamtx` | Stream graph key value | `0` |
+| `-X`, `--streampp-tx` | Stream PP graph key value | `0` |
+| `-Y`, `--devicepp-tx` | Device PP graph key value | `0` |
+| `-Z`, `--devicetx` | Device graph key value | `0` |
+| `-I`, `--instancetx` | Instance graph key value | `INSTANCE_1` |
+| `--capture-period-size` / `-count` / `--capture-rate` | Per-stream overrides of the shared values | shared |
+
+Graph key values can be passed as strings (e.g., `SPEAKER` for playback,
+`PCM_RECORD` for capture) or hex numbers.
 
 ### Example
 
 ```bash
-./build/ar_audioengine -c 100 -d 100 -B CODEC_DMA-LPAIF_WSA-RX-0 -C 0 -D 0
+./build/ar_audioengine -c 100 -d 100 -k CODEC_DMA-LPAIF_WSA-RX-0 -s 0 -e 0
 ```
 
 ## Writing a project

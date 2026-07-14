@@ -77,10 +77,18 @@ struct group_config {
 };
 //-------------------------------
 
+// front/back endpoint info for one direction (not the graph itself); the engine
+// keeps one entry per active direction so playback and capture can coexist
+struct agm_endpoints {
+    char *frontend_name;
+    char *backend_name;
+    struct device_config backend_config;
+};
+#define AGM_MAX_ENDPOINTS 2
+
 static struct mixer *g_mixer = NULL;
-static char *g_frontend_name;
-static char *g_backend_name;
-static struct device_config g_backend_config;
+static struct agm_endpoints g_endpoints[AGM_MAX_ENDPOINTS];
+static int g_num_endpoints = 0;
 
 
 enum {
@@ -672,15 +680,13 @@ void start_group_tag(void *userdata, const XML_Char *tag_name, const XML_Char **
     config->slot_mask = atoi(attr[9]);
 }
 
-static int get_backend_info(const char* filename, char *backend_name, void *config, int type)
+int get_backend_config(const char* filename, char *backend_name, struct device_config *config)
 {
     FILE *file = NULL;
     XML_Parser parser;
     int ret = 0;
     int bytes_read;
     void *buf = NULL;
-    struct device_config *dev_cfg;
-    struct group_config *grp_cfg;
 
     file = fopen(filename, "r");
     if (!file) {
@@ -695,18 +701,10 @@ static int get_backend_info(const char* filename, char *backend_name, void *conf
         printf("Failed to create XML ret %d\n", ret);
         goto closeFile;
     }
-    if (type == DEVICE) {
-        dev_cfg = (struct device_config *)config;
-        memset(dev_cfg, 0, sizeof(*dev_cfg));
-        strlcpy(dev_cfg->name, backend_name, sizeof(dev_cfg->name));
-        XML_SetElementHandler(parser, start_tag, NULL);
-    } else {
-        grp_cfg = (struct group_config *)config;
-        memset(grp_cfg, 0, sizeof(*grp_cfg));
-        strlcpy(grp_cfg->name, backend_name, sizeof(grp_cfg->name));
-        XML_SetElementHandler(parser, start_group_tag, NULL);
-    }
 
+    memset(config, 0, sizeof(*config));
+    strlcpy(config->name, backend_name, sizeof(config->name));
+    XML_SetElementHandler(parser, start_tag, NULL);
     XML_SetUserData(parser, config);
 
     while (1) {
@@ -729,11 +727,11 @@ static int get_backend_info(const char* filename, char *backend_name, void *conf
             printf("XML ParseBuffer failed for %s file ret %d\n", filename, ret);
             goto freeParser;
         }
-        if (bytes_read == 0 || ((struct device_config *)config)->rate != 0)
+        if (bytes_read == 0 || config->rate != 0)
             break;
     }
 
-    if (((struct device_config *)config)->rate == 0) {
+    if (config->rate == 0) {
         ret = -EINVAL;
         printf("Entry not found\n");
     }
@@ -743,11 +741,6 @@ closeFile:
     fclose(file);
 done:
     return ret;
-}
-
-int get_backend_config(const char* filename, char *backend_name, struct device_config *config)
-{
-    return get_backend_info(filename, backend_name, (void *)config, DEVICE);
 }
 
 int set_agm_backend_config(char *backend_name, struct device_config *config)
@@ -1462,40 +1455,60 @@ int inspect_agm_dma_sink(char *frontend_name, uint32_t miid)
 
 
 
-int init_agm_mixer(unsigned int virtual_card, char *frontend_name, char *backend_name, const char *backend_xml,
-                   struct agm_key_value stream_kv, struct agm_key_value instance_kv, struct agm_key_value streampp_kv, 
-                   struct agm_key_value devicepp_kv, struct agm_key_value device_kv)
+// open the mixer on the virtual card; the per-direction graphs are built later by
+// setup_agm_mixer_graph()
+int init_agm_mixer(unsigned int virtual_card)
+{
+    g_mixer = mixer_open(virtual_card);
+    if (!g_mixer) {
+        printf("Failed to open mixer\n");
+        return -1;
+    }
+    return 0;
+}
+
+// build and connect one direction's graph (frontend<->backend), recording its
+// endpoint info in g_endpoints so cleanup_agm_mixer can tear it down. requires
+// the mixer to be open (init_agm_mixer) first. called once per active direction.
+int setup_agm_mixer_graph(char *frontend_name, char *backend_name, const char *backend_xml,
+                          struct agm_key_value stream_kv, struct agm_key_value instance_kv,
+                          struct agm_key_value streampp_kv, struct agm_key_value devicepp_kv,
+                          struct agm_key_value device_kv)
 {
     struct agm_key_value *graph_kv = NULL;
     int num_graph_kv = 0;
     int idx = 0;
     int ret = 0;
+    char *fe = NULL;
+    char *be = NULL;
+    struct device_config backend_config;
 
-    g_frontend_name = strdup(frontend_name);
-    g_backend_name = strdup(backend_name);
-
-
-    g_mixer = mixer_open(virtual_card);
     if (!g_mixer) {
-        printf("Failed to open mixer\n");
-        ret = -1;
-        goto done;
+        printf("Mixer not open; call init_agm_mixer() first\n");
+        return -1;
     }
+    if (g_num_endpoints >= AGM_MAX_ENDPOINTS) {
+        printf("Too many graphs set up (max %d)\n", AGM_MAX_ENDPOINTS);
+        return -1;
+    }
+
+    fe = strdup(frontend_name);
+    be = strdup(backend_name);
 
     // retrieve standard configuration of backend card
-    if (get_backend_config(backend_xml, g_backend_name, &g_backend_config)) {
-        printf("Invalid backend card, entry not found for: %s\n", g_backend_name);
+    if (get_backend_config(backend_xml, be, &backend_config)) {
+        printf("Invalid backend card, entry not found for: %s\n", be);
         ret = -1;
         goto done;
     }
-    if (g_backend_config.format != PCM_FORMAT_INVALID) {    
+    if (backend_config.format != PCM_FORMAT_INVALID) {
         // format is optional, but if provided let's make sure that the num of bits matches the format!
-        g_backend_config.bits = format_to_signed_pcm_bits(g_backend_config.format); // inverse of signed_pcm_bits_to_format()
+        backend_config.bits = format_to_signed_pcm_bits(backend_config.format); // inverse of signed_pcm_bits_to_format()
     }
 
     // intialize backend via mixer with its standard configuration
-    if (set_agm_backend_config(g_backend_name, &g_backend_config)) {
-        printf("Failed to configure backend %s\n", g_backend_name);
+    if (set_agm_backend_config(be, &backend_config)) {
+        printf("Failed to configure backend %s\n", be);
         ret = -1;
         goto done;
     }
@@ -1515,7 +1528,7 @@ int init_agm_mixer(unsigned int virtual_card, char *frontend_name, char *backend
         num_graph_kv++;
     if (device_kv.value != 0)
         num_graph_kv++;
-    
+
     // Allocate array if we have any non-zero values
     if (num_graph_kv == 0) {
         printf("Empty graph key-value vector, no use case can be loaded\n");
@@ -1526,9 +1539,10 @@ int init_agm_mixer(unsigned int virtual_card, char *frontend_name, char *backend
     graph_kv = (struct agm_key_value *)calloc(num_graph_kv, sizeof(struct agm_key_value));
     if (!graph_kv) {
         fprintf(stderr, "Failed to allocate memory for graph_kv array\n");
-        return -ENOMEM;
+        ret = -ENOMEM;
+        goto done;
     }
-    
+
     // Copy non-zero key-value pairs to the array
     if (stream_kv.value != 0) {
         graph_kv[idx].key = stream_kv.key;
@@ -1557,22 +1571,32 @@ int init_agm_mixer(unsigned int virtual_card, char *frontend_name, char *backend
     }
 
     // build graph
-    if (set_agm_graph(g_frontend_name, graph_kv, num_graph_kv)) {
+    if (set_agm_graph(fe, graph_kv, num_graph_kv)) {
         printf("Failed to build graph for use case\n");
         ret = -1;
         goto done;
     }
 
     // connect frontend and backend to graph
-    if (connect_agm_frontend_to_backend(g_frontend_name, g_backend_name, true)) {
+    if (connect_agm_frontend_to_backend(fe, be, true)) {
         printf("Failed to connect pcm to audio interface\n");
         ret = -1;
         goto done;
     }
     printf("\n");
 
+    // commit: ownership of fe/be transfers to g_endpoints
+    g_endpoints[g_num_endpoints].frontend_name = fe;
+    g_endpoints[g_num_endpoints].backend_name = be;
+    g_endpoints[g_num_endpoints].backend_config = backend_config;
+    g_num_endpoints++;
+    fe = NULL;
+    be = NULL;
+
 done:
     free(graph_kv);
+    free(fe); // freed only if not committed above
+    free(be);
     return ret;
 }
 
@@ -1600,6 +1624,9 @@ static bool is_alsa_pcm_open(unsigned int card_id, unsigned int device_id)
     return open;
 }
 
+// LEGACY / currently unused: kept as the reference for per-direction (RX/TX)
+// endpoint configuration to be reintroduced later. Operates on the playback
+// endpoint (g_endpoints[0]); RX-hardcoded.
 int configure_agm_modules(unsigned int physical_card, unsigned int physical_device, unsigned int period_count,
                          unsigned int frame_size_fcr)
 {
@@ -1607,11 +1634,11 @@ int configure_agm_modules(unsigned int physical_card, unsigned int physical_devi
     uint32_t mid = 0;
 
     // retrieve the instance id of the PSPD MFC module...
-    if (get_agm_module_iid(g_frontend_name, g_backend_name, PER_STREAM_PER_DEVICE_MFC, &miid, &mid) == 0) {
+    if (get_agm_module_iid(g_endpoints[0].frontend_name, g_endpoints[0].backend_name, PER_STREAM_PER_DEVICE_MFC, &miid, &mid) == 0) {
         printf("\n");
         // ...and use it to configure one of its params
-        if (configure_agm_mfc(g_frontend_name, g_backend_config.rate,
-                              g_backend_config.ch, g_backend_config.bits, miid)) {
+        if (configure_agm_mfc(g_endpoints[0].frontend_name, g_endpoints[0].backend_config.rate,
+                              g_endpoints[0].backend_config.ch, g_endpoints[0].backend_config.bits, miid)) {
             printf("Failed to configure pspd mfc\n");
             return -1;
         }    
@@ -1626,12 +1653,12 @@ int configure_agm_modules(unsigned int physical_card, unsigned int physical_devi
     // same with the device hardware endpoint rx (sink) module found in the device subgraph...
     // skip if the physical PCM is already open by another instance (can only be configured once, before pcm_start)
     if (!is_alsa_pcm_open(physical_card, physical_device)) {
-        if (get_agm_module_iid(g_frontend_name, g_backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) == 0) {
+        if (get_agm_module_iid(g_endpoints[0].frontend_name, g_endpoints[0].backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) == 0) {
             printf("\n");
 
             // different configurations for different sink modules
             if(mid == MODULE_ID_CODEC_DMA_SINK)  {
-                if (configure_agm_dma_sink(g_frontend_name, frame_size_fcr, miid)) {
+                if (configure_agm_dma_sink(g_endpoints[0].frontend_name, frame_size_fcr, miid)) {
                     printf("Failed to configure Coced DMA Sink\n");
                     return -1;
                 }
@@ -1639,7 +1666,7 @@ int configure_agm_modules(unsigned int physical_card, unsigned int physical_devi
             // if the module is Alsa Device Sink
             else if(mid == MODULE_ID_ALSA_DEVICE_SINK) {
                 // ...we configure two of its params
-                if (configure_agm_alsa_sink(g_frontend_name, physical_card, physical_device,
+                if (configure_agm_alsa_sink(g_endpoints[0].frontend_name, physical_card, physical_device,
                                             period_count, frame_size_fcr, miid)) {
                     printf("Failed to configure Alsa Device Sink\n");
                     return -1;
@@ -1660,15 +1687,17 @@ int configure_agm_modules(unsigned int physical_card, unsigned int physical_devi
     return 0;
 }
 
+// LEGACY / currently unused: reference for per-direction inspection. Operates on
+// the playback endpoint (g_endpoints[0]); RX-hardcoded.
 int inspect_agm_modules()
 {
     uint32_t miid = 0;
     uint32_t mid = 0;
 
     // retrieve the instance id of the PSPD MFC module...
-    if (get_agm_module_iid(g_frontend_name, g_backend_name, PER_STREAM_PER_DEVICE_MFC, &miid, &mid) == 0) {
+    if (get_agm_module_iid(g_endpoints[0].frontend_name, g_endpoints[0].backend_name, PER_STREAM_PER_DEVICE_MFC, &miid, &mid) == 0) {
         printf("\n");
-        if (inspect_agm_mfc(g_frontend_name, miid)) {
+        if (inspect_agm_mfc(g_endpoints[0].frontend_name, miid)) {
             printf("Failed to configure pspd mfc\n");
             return -1;
         }    
@@ -1681,11 +1710,11 @@ int inspect_agm_modules()
 
     
     // same with the device hardware endpoint rx (sink) module found in the device subgraph...
-    if (get_agm_module_iid(g_frontend_name, g_backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) == 0) {
+    if (get_agm_module_iid(g_endpoints[0].frontend_name, g_endpoints[0].backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) == 0) {
         printf("\n");
         if(mid == MODULE_ID_CODEC_DMA_SINK) {
             // ...and use it to configure one of its params
-            if (inspect_agm_dma_sink(g_frontend_name, miid)) {
+            if (inspect_agm_dma_sink(g_endpoints[0].frontend_name, miid)) {
                 printf("Failed to inspect Coced DMA Sink\n");
                 return -1;
             }    
@@ -1704,17 +1733,21 @@ int inspect_agm_modules()
 }
 
 void cleanup_agm_mixer(void)
-{   
+{
     if (g_mixer != NULL) {
-        connect_agm_frontend_to_backend(g_frontend_name, g_backend_name, false);
+        // disconnect every direction's frontend/backend, then close the shared mixer
+        for (int d = 0; d < g_num_endpoints; d++)
+            connect_agm_frontend_to_backend(g_endpoints[d].frontend_name,
+                                            g_endpoints[d].backend_name, false);
         mixer_close(g_mixer);
+        g_mixer = NULL;
     }
 
-    if (g_frontend_name != NULL) {
-        free(g_frontend_name);
+    for (int d = 0; d < g_num_endpoints; d++) {
+        free(g_endpoints[d].frontend_name);
+        free(g_endpoints[d].backend_name);
+        g_endpoints[d].frontend_name = NULL;
+        g_endpoints[d].backend_name = NULL;
     }
-
-    if (g_backend_name != NULL) {
-        free(g_backend_name);
-    }
+    g_num_endpoints = 0;
 }

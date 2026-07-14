@@ -96,27 +96,11 @@ enum pcm_format signed_pcm_bits_to_format(int bits)
     }
 }
 
-bool is_format_big_endian(enum pcm_format format) 
-{
-    // these are based on libtinyalsa2.0.0 pcm.h
-    switch(format) {
-    case PCM_FORMAT_S16_BE:
-    case PCM_FORMAT_S24_BE:
-    case PCM_FORMAT_S24_3BE:
-    case PCM_FORMAT_S32_BE:
-    case PCM_FORMAT_FLOAT_BE:
-        return true;
-    default:
-        return false;
-    }
-}
-
-bool is_format_float(enum pcm_format format) 
+bool is_format_float(enum pcm_format format)
 {
     // these are based on libtinyalsa2.0.0 pcm.h
     switch(format) {
     case PCM_FORMAT_FLOAT_LE:
-    case PCM_FORMAT_FLOAT_BE:
         return true;
     default:
         return false;

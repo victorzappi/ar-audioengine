@@ -158,6 +158,113 @@ static const KeyMapping streampp_rx_map[] = {
 
 #define STREAMPP_RX_MAP_SIZE (sizeof(streampp_rx_map) / sizeof(streampp_rx_map[0]))
 
+/* StreamTX mapping table */
+static const KeyMapping streamtx_map[] = {
+    { 0xB1000001, "PCM_RECORD" },
+    { 0xB1000002, "PCM_TX_LOOPBACK" },
+    { 0xB1000003, "VOICE_UI" },
+    { 0xB1000004, "VOIP_TX_RECORD" },
+    { 0xB1000005, "HFP_RX_CAPTURE" },
+    { 0xB1000006, "HFP_TX_CAPTURE" },
+    { 0xB1000007, "VOICE_CALL_TX" },
+    { 0xB1000008, "DEEPBUFFER_RECORD" },
+    { 0xB1000009, "RAW_RECORD" },
+    { 0xB100000A, "PCM_ULL_RECORD" },
+    { 0xB100000B, "PCM_PROXY_RECORD" },
+    { 0xB100000C, "INCALL_RECORD" },
+    { 0xB100000D, "ACD" },
+    { 0xB100000E, "SENSOR_PCM_DATA" },
+    { 0xB100000F, "VOICE_CALL_RX_HPCM_RECORD" },
+    { 0xB1000010, "VOICE_CALL_TX_HPCM_RECORD" },
+    { 0xB1000011, "VOICE_RECOGNITION_RECORD" },
+    { 0xB1000012, "COMPRESS_CAPTURE" },
+};
+
+#define STREAMTX_MAP_SIZE (sizeof(streamtx_map) / sizeof(streamtx_map[0]))
+
+/* DeviceTX mapping table */
+static const KeyMapping devicetx_map[] = {
+    { 0xA3000001, "SPEAKER_MIC" },
+    { 0xA3000002, "BT_TX" },
+    { 0xA3000003, "HEADPHONE_MIC" },
+    { 0xA3000004, "HANDSETMIC" },
+    { 0xA3000005, "USB_TX" },
+    { 0xA3000006, "HANDSETMIC_VA" },
+    { 0xA3000007, "HEADSETMIC_VA" },
+    { 0xA3000008, "PROXY_TX" },
+    { 0xA3000009, "VI_TX" },
+    { 0xA300000A, "FM_TX" },
+    { 0xA300000B, "ULTRASOUND_TX" },
+    { 0xA300000C, "HAPTICS_VI_TX" },
+    { 0xA300000D, "ECHO_REF_TX" },
+    { 0xA300000E, "CPS_TX" },
+    { 0xA300000F, "CPS2_TX" },
+    { 0xA3000010, "DUMMY_TX" },
+};
+
+#define DEVICETX_MAP_SIZE (sizeof(devicetx_map) / sizeof(devicetx_map[0]))
+
+/* DevicePP_TX mapping table */
+static const KeyMapping devicepp_tx_map[] = {
+    { 0xAD000001, "DEVICEPP_TX_FLUENCE_FFECNS" },
+    { 0xAD000002, "DEVICEPP_TX_AUDIO_FLUENCE_SMECNS" },
+    { 0xAD000003, "DEVICEPP_TX_AUDIO_FLUENCE_ENDFIRE" },
+    { 0xAD000004, "DEVICEPP_TX_AUDIO_FLUENCE_PRO" },
+    { 0xAD000005, "DEVICEPP_TX_VOIP_FLUENCE_PRO" },
+    { 0xAD000006, "DEVICEPP_TX_HFP_SINK_FLUENCE_SMECNS" },
+    { 0xAD000007, "DEVICEPP_TX_VOIP_FLUENCE_SMECNS" },
+    { 0xAD000008, "DEVICEPP_TX_VOICE_FLUENCE_SMECNS" },
+    { 0xAD000009, "DEVICEPP_TX_VOICE_FLUENCE_ENDFIRE" },
+    { 0xAD00000A, "DEVICEPP_TX_VOICE_FLUENCE_PRO" },
+    { 0xAD00000B, "DEVICEPP_TX_FLUENCE_FFNS" },
+    { 0xAD00000C, "DEVICEPP_TX_RAW_LPI" },
+    { 0xAD00000D, "DEVICEPP_TX_VOIP_FLUENCE_ENDFIRE" },
+    { 0xAD00000E, "DEVICEPP_TX_RAW_NLPI" },
+    { 0xAD00000F, "DEVICEPP_TX_VOICE_FLUENCE_NN" },
+    { 0xAD000010, "DEVICEPP_TX_VOIP_FLUENCE_NN" },
+    { 0xAD000011, "DEVICEPP_TX_ULTRASOUND_DETECTOR" },
+    { 0xAD000012, "DEVICEPP_TX_FLUENCE_FFEC" },
+    { 0xAD000013, "DEVICEPP_TX_VOICE_FLUENCE_ENDFIRE_RVE" },
+    { 0xAD000014, "DEVICEPP_TX_HPCM" },
+    { 0xAD000015, "DEVICEPP_TX_HFP_SINK_FLUENCE_ENDFIRE" },
+    { 0xAD000016, "DEVICEPP_TX_AUDIO_FLUENCE_NN" },
+    { 0xAD000017, "DEVICEPP_TX_VOICE_RECOGNITION" },
+    { 0xAD000018, "DEVICEPP_TX_HFP_SINK_FLUENCE_NN_SM" },
+    { 0xAD000019, "DEVICEPP_TX_AAD" },
+    { 0xAD00001A, "DEVICEPP_TX_FLUENCE_FFNS_AAD" },
+    { 0xAD00001B, "DEVICEPP_TX_RAW_LPI_AAD" },
+    { 0xAD00001C, "DEVICEPP_TX_VOICE_FLUENCE_NN_DM" },
+    { 0xAD00001D, "DEVICEPP_TX_HFP_SINK_FLUENCE_NN_DM" },
+    { 0xAD00001E, "DEVICEPP_TX_AUDIO_FLUENCE_NN_DM" },
+    { 0xAD00001F, "DEVICEPP_TX_VOICE_FLUENCE_ENDFIRE_FNN_NS" },
+    { 0xAD000020, "DEVICEPP_TX_VOICE_FLUENCE_PRO_FNN_NS" },
+    { 0xAD000021, "DEVICEPP_TX_VOIP_FLUENCE_ENDFIRE_FNN_NS" },
+    { 0xAD000022, "DEVICEPP_TX_VOIP_FLUENCE_PRO_FNN_NS" },
+    { 0xAD000023, "DEVICEPP_TX_AUDIO_RECORD_ENQORE" },
+    { 0xAD000024, "DEVICEPP_TX_VOICE_FLUENCE_NN_RVE" },
+    { 0xAD000025, "DEVICEPP_TX_CUSTOM_ECNS" },
+    { 0xAD000026, "DEVICEPP_TX_CUSTOM_NS" },
+    { 0xAD000027, "DEVICEPP_TX_AUDIO_FLUENCE_SMECNS_EXT_EC" },
+    { 0xAD000028, "DEVICEPP_TX_AUDIO_FLUENCE_ENDFIRE_EXT_EC" },
+    { 0xAD000029, "DEVICEPP_TX_AUDIO_FLUENCE_PRO_EXT_EC" },
+    { 0xAD00002A, "DEVICEPP_TX_VOIP_FLUENCE_SMECNS_EXT_EC" },
+    { 0xAD00002B, "DEVICEPP_TX_VOIP_FLUENCE_ENDFIRE_EXT_EC" },
+    { 0xAD00002C, "DEVICEPP_TX_VOIP_FLUENCE_PRO_EXT_EC" },
+    { 0xAD00002D, "DEVICEPP_TX_VOICE_FLUENCE_SMECNS_EXT_EC" },
+    { 0xAD00002E, "DEVICEPP_TX_VOICE_FLUENCE_ENDFIRE_EXT_EC" },
+    { 0xAD00002F, "DEVICEPP_TX_VOICE_FLUENCE_PRO_EXT_EC" },
+    { 0xAD000030, "DEVICEPP_TX_EC_REF" },
+};
+
+#define DEVICEPP_TX_MAP_SIZE (sizeof(devicepp_tx_map) / sizeof(devicepp_tx_map[0]))
+
+/* StreamPP_TX mapping table */
+static const KeyMapping streampp_tx_map[] = {
+    { 0xB0000001, "STREAMPP_TX_DEFAULT" },
+};
+
+#define STREAMPP_TX_MAP_SIZE (sizeof(streampp_tx_map) / sizeof(streampp_tx_map[0]))
+
 /* Tags definitions mapping table */
 static const KeyMapping tags_map[] = {
     { 0xC0000001, "SHMEM_ENDPOINT" },
@@ -253,6 +360,56 @@ static inline const char* get_devicepp_rx_name(uint32_t key) {
     return "UNKNOWN";
 }
 
+/* Helper function to get StreamPP_RX name from key */
+static inline const char* get_streampp_rx_name(uint32_t key) {
+    for (size_t i = 0; i < STREAMPP_RX_MAP_SIZE; i++) {
+        if (streampp_rx_map[i].key == key) {
+            return streampp_rx_map[i].name;
+        }
+    }
+    return "UNKNOWN";
+}
+
+/* Helper function to get StreamTX name from key */
+static inline const char* get_streamtx_name(uint32_t key) {
+    for (size_t i = 0; i < STREAMTX_MAP_SIZE; i++) {
+        if (streamtx_map[i].key == key) {
+            return streamtx_map[i].name;
+        }
+    }
+    return "UNKNOWN";
+}
+
+/* Helper function to get DeviceTX name from key */
+static inline const char* get_devicetx_name(uint32_t key) {
+    for (size_t i = 0; i < DEVICETX_MAP_SIZE; i++) {
+        if (devicetx_map[i].key == key) {
+            return devicetx_map[i].name;
+        }
+    }
+    return "UNKNOWN";
+}
+
+/* Helper function to get DevicePP_TX name from key */
+static inline const char* get_devicepp_tx_name(uint32_t key) {
+    for (size_t i = 0; i < DEVICEPP_TX_MAP_SIZE; i++) {
+        if (devicepp_tx_map[i].key == key) {
+            return devicepp_tx_map[i].name;
+        }
+    }
+    return "UNKNOWN";
+}
+
+/* Helper function to get StreamPP_TX name from key */
+static inline const char* get_streampp_tx_name(uint32_t key) {
+    for (size_t i = 0; i < STREAMPP_TX_MAP_SIZE; i++) {
+        if (streampp_tx_map[i].key == key) {
+            return streampp_tx_map[i].name;
+        }
+    }
+    return "UNKNOWN";
+}
+
 /* Helper function to get tag name from key */
 static inline const char* get_tag_name(uint32_t key) {
     for (size_t i = 0; i < TAGS_MAP_SIZE; i++) {
@@ -282,12 +439,37 @@ static inline const char* get_audioreach_name(uint32_t key_or_value) {
     if ((key_or_value & 0xFF000000) == 0xA2000000) {
         return get_devicerx_name(key_or_value);
     }
-    
+
+    /* Check if it's a DeviceTX key (0xA3xxxxxx) */
+    if ((key_or_value & 0xFF000000) == 0xA3000000) {
+        return get_devicetx_name(key_or_value);
+    }
+
     /* Check if it's a DevicePP_RX key (0xACxxxxxx) */
     if ((key_or_value & 0xFF000000) == 0xAC000000) {
         return get_devicepp_rx_name(key_or_value);
     }
-    
+
+    /* Check if it's a DevicePP_TX key (0xADxxxxxx) */
+    if ((key_or_value & 0xFF000000) == 0xAD000000) {
+        return get_devicepp_tx_name(key_or_value);
+    }
+
+    /* Check if it's a StreamPP_RX key (0xAFxxxxxx) */
+    if ((key_or_value & 0xFF000000) == 0xAF000000) {
+        return get_streampp_rx_name(key_or_value);
+    }
+
+    /* Check if it's a StreamPP_TX key (0xB0xxxxxx) */
+    if ((key_or_value & 0xFF000000) == 0xB0000000) {
+        return get_streampp_tx_name(key_or_value);
+    }
+
+    /* Check if it's a StreamTX key (0xB1xxxxxx) */
+    if ((key_or_value & 0xFF000000) == 0xB1000000) {
+        return get_streamtx_name(key_or_value);
+    }
+
     /* Check if it's a Tags key (0xC0xxxxxx) */
     if ((key_or_value & 0xFF000000) == 0xC0000000) {
         return get_tag_name(key_or_value);
@@ -350,6 +532,54 @@ static inline uint32_t get_device_rx_value(const char* name) {
     for (size_t i = 0; i < DEVICERX_MAP_SIZE; i++) {
         if (strcmp(devicerx_map[i].name, name) == 0) {
             return devicerx_map[i].key;
+        }
+    }
+    return 0; /* Return 0 if not found */
+}
+
+/* Helper function to get StreamTX value from name */
+static inline uint32_t get_streamtx_value(const char* name) {
+    if (name == NULL) return 0;
+
+    for (size_t i = 0; i < STREAMTX_MAP_SIZE; i++) {
+        if (strcmp(streamtx_map[i].name, name) == 0) {
+            return streamtx_map[i].key;
+        }
+    }
+    return 0; /* Return 0 if not found */
+}
+
+/* Helper function to get StreamPP_TX value from name */
+static inline uint32_t get_streampp_tx_value(const char* name) {
+    if (name == NULL) return 0;
+
+    for (size_t i = 0; i < STREAMPP_TX_MAP_SIZE; i++) {
+        if (strcmp(streampp_tx_map[i].name, name) == 0) {
+            return streampp_tx_map[i].key;
+        }
+    }
+    return 0; /* Return 0 if not found */
+}
+
+/* Helper function to get DevicePP_TX value from name */
+static inline uint32_t get_device_pp_tx_value(const char* name) {
+    if (name == NULL) return 0;
+
+    for (size_t i = 0; i < DEVICEPP_TX_MAP_SIZE; i++) {
+        if (strcmp(devicepp_tx_map[i].name, name) == 0) {
+            return devicepp_tx_map[i].key;
+        }
+    }
+    return 0; /* Return 0 if not found */
+}
+
+/* Helper function to get DeviceTX value from name */
+static inline uint32_t get_device_tx_value(const char* name) {
+    if (name == NULL) return 0;
+
+    for (size_t i = 0; i < DEVICETX_MAP_SIZE; i++) {
+        if (strcmp(devicetx_map[i].name, name) == 0) {
+            return devicetx_map[i].key;
         }
     }
     return 0; /* Return 0 if not found */

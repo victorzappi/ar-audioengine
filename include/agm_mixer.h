@@ -38,9 +38,14 @@
 #include <agm/agm_api.h> // for struct agm_key_value
 
 
-int init_agm_mixer(unsigned int virtual_card, char *frontend_name, char *backend_name, const char *backend_xml,
-                   struct agm_key_value stream_kv, struct agm_key_value instance_kv, struct agm_key_value streampp_kv, 
-                   struct agm_key_value devicepp_kv, struct agm_key_value device_kv);
+// open the mixer on the virtual card (shared by both directions)
+int init_agm_mixer(unsigned int virtual_card);
+
+// build+connect one direction's graph; call once per direction after init_agm_mixer
+int setup_agm_mixer_graph(char *frontend_name, char *backend_name, const char *backend_xml,
+                          struct agm_key_value stream_kv, struct agm_key_value instance_kv,
+                          struct agm_key_value streampp_kv, struct agm_key_value devicepp_kv,
+                          struct agm_key_value device_kv);
 
 int configure_agm_modules(unsigned int physical_card, unsigned int physical_device, unsigned int period_count, 
                   unsigned int frame_size_fcr);

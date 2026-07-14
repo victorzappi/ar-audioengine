@@ -13,8 +13,6 @@ int format_to_signed_pcm_bits(enum pcm_format fmt_id);
 
 enum pcm_format signed_pcm_bits_to_format(int bits);
 
-bool is_format_big_endian(enum pcm_format format);
-
 bool is_format_float(enum pcm_format format);
 
 
