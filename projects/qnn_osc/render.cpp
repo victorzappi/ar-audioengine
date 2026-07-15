@@ -198,14 +198,14 @@ int setup(struct audio_ctx *ctx, void *user_data)
 
     if (modelPath.empty() || backendPath.empty() || systemLibraryPath.empty())
     {
-        std::cerr << "qnn_sine: --qnn-model, --qnn-backend and --qnn-system are all required\n";
+        std::cerr << "qnn_osc: --qnn-model, --qnn-backend and --qnn-system are all required\n";
         return EXIT_FAILURE;
     }
 
     model.reset(new ar::qnn::QnnModel(backendPath, modelPath, systemLibraryPath));
     if (!model->load(logLevel))
     {
-        std::cerr << "qnn_sine: failed to load model\n";
+        std::cerr << "qnn_osc: failed to load model\n";
         return EXIT_FAILURE;
     }
 

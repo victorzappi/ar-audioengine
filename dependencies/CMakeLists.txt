@@ -139,7 +139,7 @@ if (ADD_QNN)
         message(FATAL_ERROR "QNN headers not found at ${QNN_INCLUDE_DIR}")
     endif()
 
-    # The clean-room wrapper (libraries/QNN/QnnModel) uses only the public QNN
+    # The clean-room wrapper (libraries/QnnModel) uses only the public QNN
     # headers plus dlopen -- it does NOT compile any QNN SDK sample source. So we
     # only need the public include path and libdl on the include/link line.
     #

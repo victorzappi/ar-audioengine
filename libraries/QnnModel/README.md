@@ -1,8 +1,9 @@
-# QNN Integration
+# QnnModel
 
-This folder provides a small, self-contained wrapper for loading a Qualcomm model
-and running it inside the audio engine. The entry point is `ar::qnn::QnnModel` in
-[`QnnModel.h`](QnnModel.h). It loads either format, chosen by file extension:
+This library provides a small, self-contained wrapper for loading a Qualcomm
+model and running it inside the audio engine. The entry point is
+`ar::qnn::QnnModel` in [`QnnModel.h`](QnnModel.h). It loads either format, chosen
+by file extension:
 
 - **`.dlc`** — a Deep Learning Container, composed into a context at load time.
 - **`.bin`** — a precompiled context binary (faster init; e.g. for HTP), loaded
@@ -64,7 +65,7 @@ at your buffers) — suitable for the real-time audio thread.
 
 ## Sample QNN project
 
-`projects/qnn_sine` is an example project using this integration: it generates
+`projects/qnn_osc` is an example project using this integration: it generates
 audio with a small neural network trained to recreate a sine wave. Two models,
 `full_oscillator_256x2.dlc` and `full_oscillator_512x2.dlc`, are provided with
 batch sizes of 256 and 512. Run it with the audio engine period size matching the
