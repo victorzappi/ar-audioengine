@@ -59,42 +59,53 @@ void showHelp()
         << "\n\n"
         << "REQUIRED ARGUMENTS:\n"
         << "-------------------\n"
-        << "  --backend           <FILE>      Path to a QNN backend to execute the model.\n"
+        << "  --qnn-backend      <FILE>   Path to a QNN backend to execute the model.\n"
         << "\n"
-        << "  --dlc_path          <FILE>      Path to DLC file containing the model. Requires\n"
-        << " --system_library to be specified.\n"
-        << "  --system_library     <FILE>     Path to QNN System library (libQnnSystem.so) needed to "
-           "exercise reflection APIs\n"
-           "                                  when loading a context from a binary cache or using "
-           "DLC.\n"
-           "                                  libQnnSystem.so is provided under <target>/lib in the "
-           "SDK.\n"
-           "\n"
+        << "  --dlc-model        <FILE>   Path to the DLC file containing the model.\n"
+        << "                              Requires --qnn-system to be specified.\n"
+        << "\n"
+        << "  --qnn-system       <FILE>   Path to the QNN System library (libQnnSystem.so),\n"
+        << "                              needed when loading a model from a DLC.\n"
         << "\n\n"
-
         << "OPTIONAL ARGUMENTS:\n"
         << "-------------------\n"
-
-        << "  --freq             <VAL>       Set oscillator frequency in Hz. Defaults to 440.\n"
+        << "  --freq             <VAL>    Set oscillator frequency in Hz. Defaults to 440.\n"
         << "\n"
-        << "  --amp              <VAL>       Set oscillator amplitude (0.0-1.0). Defaults to 0.8.\n"
+        << "  --amp              <VAL>    Set oscillator amplitude (0.0-1.0). Defaults to 0.8.\n"
         << "\n"
-        << "  --help                          Show this help message.\n"
+        << "  --log-level        <1-5>    QNN log level: 1=ERROR, 2=WARN, 3=INFO,\n"
+        << "                              4=VERBOSE, 5=DEBUG. Defaults to ERROR.\n"
+        << "\n"
+        << "  --project-help              Show this help message.\n"
         << std::endl;
 }
 
 void processCommandLine(char **argv)
 {
+    // long-only option ids: start past the ASCII range so optparse treats them as
+    // long-form only, i.e. there are no single-char short options
+    // short-form may easily clash with the manu arguments dealt with by main
+    enum
+    {
+        OPT_DLC_MODEL = 256,
+        OPT_QNN_BACKEND,
+        OPT_QNN_SYSTEM,
+        OPT_LOG_LEVEL,
+        OPT_FREQ,
+        OPT_AMP,
+        OPT_PROJECT_HELP,
+    };
+
     int c;
     struct optparse opts;
     struct optparse_long long_options[] = {
-        {"dlc_path", 'd', OPTPARSE_REQUIRED},
-        {"backend", 'b', OPTPARSE_REQUIRED},
-        {"system_library", 's', OPTPARSE_REQUIRED},
-        {"freq", 'f', OPTPARSE_REQUIRED},
-        {"amp", 'a', OPTPARSE_REQUIRED},
-        {"log_level", 'l', OPTPARSE_REQUIRED},
-        {"help", 'h', OPTPARSE_NONE},
+        {"dlc-model", OPT_DLC_MODEL, OPTPARSE_REQUIRED},
+        {"qnn-backend", OPT_QNN_BACKEND, OPTPARSE_REQUIRED},
+        {"qnn-system", OPT_QNN_SYSTEM, OPTPARSE_REQUIRED},
+        {"log-level", OPT_LOG_LEVEL, OPTPARSE_REQUIRED},
+        {"freq", OPT_FREQ, OPTPARSE_REQUIRED},
+        {"amp", OPT_AMP, OPTPARSE_REQUIRED},
+        {"project-help", OPT_PROJECT_HELP, OPTPARSE_NONE},
         {0, 0, OPTPARSE_NONE}};
 
     optparse_init(&opts, argv);
@@ -102,96 +113,76 @@ void processCommandLine(char **argv)
     {
         switch (c)
         {
-
-        case 'd':
+        case OPT_DLC_MODEL:
         {
             char *dlcPathC = strdup(opts.optarg);
             if (dlcPathC == NULL)
             {
-                fprintf(stderr, "failed parsing DLC path '%s'\n", argv[1]);
+                fprintf(stderr, "failed parsing DLC model path '%s'\n", opts.optarg);
                 std::exit(EXIT_FAILURE);
             }
             dlcPath = dlcPathC;
             break;
         }
-
-        case 'b':
+        case OPT_QNN_BACKEND:
         {
             char *backendPathC = strdup(opts.optarg);
             if (backendPathC == NULL)
             {
-                fprintf(stderr, "failed parsing backend path '%s'\n", argv[1]);
+                fprintf(stderr, "failed parsing QNN backend path '%s'\n", opts.optarg);
                 std::exit(EXIT_FAILURE);
             }
             backendPath = backendPathC;
             break;
         }
-
-        case 's':
+        case OPT_QNN_SYSTEM:
         {
             char *systemPathC = strdup(opts.optarg);
             if (systemPathC == NULL)
             {
-                fprintf(stderr, "failed parsing system library path '%s'\n", argv[1]);
+                fprintf(stderr, "failed parsing system library path '%s'\n", opts.optarg);
                 std::exit(EXIT_FAILURE);
             }
             systemLibraryPath = systemPathC;
             break;
         }
-
-        case 'l':
+        case OPT_LOG_LEVEL:
         {
+            // accept any QNN log level directly (1=ERROR .. 5=DEBUG); the numeric
+            // values map 1:1 to QnnLog_Level_t, so no per-level switch is needed
             unsigned int logLevel_i;
             if (sscanf(opts.optarg, "%u", &logLevel_i) != 1)
             {
-                fprintf(stderr, "failed parsing logging level '%s'\n", argv[1]);
-                return std::exit(EXIT_FAILURE);
+                fprintf(stderr, "failed parsing log level '%s'\n", opts.optarg);
+                std::exit(EXIT_FAILURE);
             }
-
-            switch (logLevel_i)
+            if (logLevel_i < QNN_LOG_LEVEL_ERROR || logLevel_i > QNN_LOG_LEVEL_DEBUG)
             {
-            case 1:
-                logLevel = QNN_LOG_LEVEL_ERROR;
-                break;
-            case 2:
-                logLevel = QNN_LOG_LEVEL_WARN;
-                break;
-            case 3:
-                logLevel = QNN_LOG_LEVEL_INFO;
-                break;
-            case 4:
-                logLevel = QNN_LOG_LEVEL_DEBUG;
-                break;
-            default:
-                fprintf(stderr, "Invalid logging level '%d' (must be 1, 2, or 3)\n", logLevel_i);
-                return std::exit(EXIT_FAILURE);
+                fprintf(stderr, "invalid log level '%u' (must be 1=ERROR .. 5=DEBUG)\n", logLevel_i);
+                std::exit(EXIT_FAILURE);
             }
+            logLevel = (QnnLog_Level_t)logLevel_i;
             break;
         }
-
-        case 'f':
+        case OPT_FREQ:
         {
             if (sscanf(opts.optarg, "%f", &frequency) != 1)
             {
-                fprintf(stderr, "failed parsing frequency '%s'\n", argv[1]);
-                return std::exit(EXIT_FAILURE);
+                fprintf(stderr, "failed parsing frequency '%s'\n", opts.optarg);
+                std::exit(EXIT_FAILURE);
             }
-            printf("!>> freq: %f", frequency);
             break;
         }
-
-        case 'a':
+        case OPT_AMP:
         {
             if (sscanf(opts.optarg, "%f", &amplitude) != 1)
             {
-                fprintf(stderr, "failed parsing amplitude '%s'\n", argv[1]);
-                return std::exit(EXIT_FAILURE);
+                fprintf(stderr, "failed parsing amplitude '%s'\n", opts.optarg);
+                std::exit(EXIT_FAILURE);
             }
-            printf("!>> amp: %f", amplitude);
             break;
         }
-
-        case 'h':
+        case OPT_PROJECT_HELP:
             showHelp();
             std::exit(EXIT_SUCCESS);
             break;
