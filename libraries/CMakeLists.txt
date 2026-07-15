@@ -18,8 +18,8 @@ endif()
 
 if(ADD_QNN)
     # clean-room wrapper: uses only the public QNN API (headers + dl), no SDK sample source
-    add_library(DlcModel STATIC QNN/DlcModel.cpp)
-    target_include_directories(DlcModel PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/QNN)
-    target_link_libraries(DlcModel PUBLIC dependencies)
-    target_link_libraries(libraries INTERFACE DlcModel)
+    add_library(QnnModel STATIC QNN/QnnModel.cpp)
+    target_include_directories(QnnModel PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/QNN)
+    target_link_libraries(QnnModel PUBLIC dependencies)
+    target_link_libraries(libraries INTERFACE QnnModel)
 endif()

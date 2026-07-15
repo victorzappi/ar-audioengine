@@ -4,11 +4,16 @@
  */
 
 // Original clean-room implementation written against the public QNN API only
-// (QnnInterface / QnnSystemInterface, QnnSystemDlc, QnnContext, QnnGraph,
-// QnnTensor, QnnTypes, QnnLog) plus <dlfcn.h>. It does not use or derive from
+// (QnnInterface / QnnSystemInterface, QnnSystemDlc, QnnSystemContext, QnnContext,
+// QnnGraph, QnnTensor, QnnLog) plus <dlfcn.h>. It does not use or derive from
 // Qualcomm's SDK sample sources (IOTensor, SampleApp, qnn_wrapper_api, PAL, etc.).
+//
+// Supports two model sources, chosen by file extension:
+//   .dlc -> composed at load via QnnSystemDlc_composeGraphs (+ graph finalize)
+//   .bin -> precompiled context binary via QnnContext_createFromBinary (no finalize)
+// Both paths converge on the same graph-retrieve / tensor-setup / execute code.
 
-#include "DlcModel.h"
+#include "QnnModel.h"
 
 #include <dlfcn.h>
 
@@ -36,13 +41,12 @@ namespace ar
             {
                 va_list ap;
                 va_start(ap, fmt);
-                fprintf(stderr, "[DlcModel] ");
+                fprintf(stderr, "[QnnModel] ");
                 vfprintf(stderr, fmt, ap);
                 fprintf(stderr, "\n");
                 va_end(ap);
             }
 
-            // callback handed to QnnLog_create: the backend logs through this
             void qnnLogCallback(const char *fmt, QnnLog_Level_t level, uint64_t /*timestamp*/, va_list argp)
             {
                 const char *tag = "UNKNOWN";
@@ -61,8 +65,6 @@ namespace ar
             }
 
             // ----- version-safe Qnn_Tensor_t accessors -------------------------
-            // Qnn_Tensor_t is a {version, union{v1, v2}}; v1 and v2 share these
-            // leading fields, so we read/write them through the active version.
 
             uint32_t tensorRank(const Qnn_Tensor_t &t)
             {
@@ -129,6 +131,24 @@ namespace ar
                 }
             }
 
+            // extract the graph array from a context binary's BinaryInfo (version-safe)
+            void binaryInfoGraphs(const QnnSystemContext_BinaryInfo_t *b,
+                                  QnnSystemContext_GraphInfo_t **graphs, uint32_t *numGraphs)
+            {
+                switch (b->version)
+                {
+                case QNN_SYSTEM_CONTEXT_BINARY_INFO_VERSION_1:
+                    *graphs = b->contextBinaryInfoV1.graphs; *numGraphs = b->contextBinaryInfoV1.numGraphs;
+                    break;
+                case QNN_SYSTEM_CONTEXT_BINARY_INFO_VERSION_2:
+                    *graphs = b->contextBinaryInfoV2.graphs; *numGraphs = b->contextBinaryInfoV2.numGraphs;
+                    break;
+                default:
+                    *graphs = b->contextBinaryInfoV3.graphs; *numGraphs = b->contextBinaryInfoV3.numGraphs;
+                    break;
+                }
+            }
+
             size_t productDims(const uint32_t *dims, uint32_t rank)
             {
                 size_t n = (rank == 0) ? 0 : 1;
@@ -137,16 +157,41 @@ namespace ar
                 return n;
             }
 
+            bool endsWith(const std::string &s, const char *suffix)
+            {
+                size_t n = strlen(suffix);
+                return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
+            }
+
+            bool readFile(const std::string &path, std::vector<uint8_t> &out)
+            {
+                FILE *f = fopen(path.c_str(), "rb");
+                if (!f)
+                    return false;
+                fseek(f, 0, SEEK_END);
+                long n = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                if (n <= 0)
+                {
+                    fclose(f);
+                    return false;
+                }
+                out.resize((size_t)n);
+                size_t rd = fread(out.data(), 1, (size_t)n, f);
+                fclose(f);
+                return rd == (size_t)n;
+            }
+
         } // namespace
 
         // =====================================================================
         // Impl
         // =====================================================================
 
-        struct DlcModel::Impl
+        struct QnnModel::Impl
         {
             std::string backendLibPath;
-            std::string dlcPath;
+            std::string modelPath;
             std::string systemLibPath;
 
             void *backendLib = nullptr;
@@ -157,16 +202,21 @@ namespace ar
             Qnn_LogHandle_t logHandle = nullptr;
             Qnn_BackendHandle_t backend = nullptr;
             Qnn_ContextHandle_t context = nullptr;
-            QnnSystemDlc_Handle_t dlc = nullptr;
 
-            QnnSystemContext_GraphInfo_t *graphs = nullptr; // owned by us; free() at teardown
+            // .dlc source
+            QnnSystemDlc_Handle_t dlc = nullptr;
+            QnnSystemContext_GraphInfo_t *dlcGraphs = nullptr; // owned by us; free() at teardown
+
+            // .bin source
+            QnnSystemContext_Handle_t sysCtx = nullptr; // owns the BinaryInfo (+ its tensors/dims)
+            std::vector<uint8_t> binaryBuffer;
+
             uint32_t numGraphs = 0;
 
-            // per-graph runtime state
             std::vector<Qnn_GraphHandle_t> graphHandles;
             std::vector<std::vector<TensorInfo>> inInfos;
             std::vector<std::vector<TensorInfo>> outInfos;
-            std::vector<std::vector<Qnn_Tensor_t>> inTensors;  // client copies for execute
+            std::vector<std::vector<Qnn_Tensor_t>> inTensors;
             std::vector<std::vector<Qnn_Tensor_t>> outTensors;
 
             bool loaded = false;
@@ -175,12 +225,11 @@ namespace ar
             void teardown();
         };
 
-        void DlcModel::Impl::teardown()
+        void QnnModel::Impl::teardown()
         {
-            const QnnInterface_t *i = iface;
-            if (i)
+            if (iface)
             {
-                auto &core = i->QNN_INTERFACE_VER_NAME;
+                auto &core = iface->QNN_INTERFACE_VER_NAME;
                 if (context && core.contextFree)
                     core.contextFree(context, nullptr);
                 if (backend && core.backendFree)
@@ -192,18 +241,21 @@ namespace ar
             backend = nullptr;
             logHandle = nullptr;
 
-            if (dlc && sysIface)
+            if (sysIface)
             {
                 auto &sys = sysIface->QNN_SYSTEM_INTERFACE_VER_NAME;
-                if (sys.systemDlcFree)
+                if (dlc && sys.systemDlcFree)
                     sys.systemDlcFree(dlc);
+                if (sysCtx && sys.systemContextFree)
+                    sys.systemContextFree(sysCtx); // frees the BinaryInfo it owns
             }
             dlc = nullptr;
+            sysCtx = nullptr;
 
-            if (graphs)
+            if (dlcGraphs)
             {
-                free(graphs); // composeGraphs: "Memory allocated in graphs is owned by clients"
-                graphs = nullptr;
+                free(dlcGraphs); // composeGraphs: "Memory allocated in graphs is owned by clients"
+                dlcGraphs = nullptr;
             }
             numGraphs = 0;
 
@@ -212,6 +264,7 @@ namespace ar
             outInfos.clear();
             inTensors.clear();
             outTensors.clear();
+            binaryBuffer.clear();
 
             if (systemLib)
             {
@@ -229,23 +282,35 @@ namespace ar
         }
 
         // =====================================================================
-        // DlcModel
+        // QnnModel
         // =====================================================================
 
-        DlcModel::DlcModel(std::string backendLibPath, std::string dlcPath, std::string systemLibPath)
+        QnnModel::QnnModel(std::string backendLibPath, std::string modelPath, std::string systemLibPath)
             : p_(new Impl())
         {
             p_->backendLibPath = std::move(backendLibPath);
-            p_->dlcPath = std::move(dlcPath);
+            p_->modelPath = std::move(modelPath);
             p_->systemLibPath = std::move(systemLibPath);
         }
 
-        DlcModel::~DlcModel() = default;
+        QnnModel::~QnnModel() = default;
 
-        bool DlcModel::load(int logLevel)
+        bool QnnModel::load(int logLevel)
         {
             if (p_->loaded)
                 return true;
+
+            // choose the source format from the file extension
+            bool isBinary;
+            if (endsWith(p_->modelPath, ".bin"))
+                isBinary = true;
+            else if (endsWith(p_->modelPath, ".dlc"))
+                isBinary = false;
+            else
+            {
+                logMsg("unknown model format for '%s' (expected .dlc or .bin)", p_->modelPath.c_str());
+                return false;
+            }
 
             // --- resolve the backend interface -------------------------------
             p_->backendLib = dlopen(p_->backendLibPath.c_str(), RTLD_NOW | RTLD_LOCAL);
@@ -269,7 +334,7 @@ namespace ar
                     logMsg("QnnInterface_getProviders returned no providers");
                     return false;
                 }
-                p_->iface = providers[0]; // one provider per backend library
+                p_->iface = providers[0];
             }
 
             // --- resolve the system interface --------------------------------
@@ -300,61 +365,108 @@ namespace ar
             auto &core = p_->iface->QNN_INTERFACE_VER_NAME;
             auto &sys = p_->sysIface->QNN_SYSTEM_INTERFACE_VER_NAME;
 
-            // --- log, backend, context ---------------------------------------
+            // --- log + backend -----------------------------------------------
             QnnLog_Level_t level = (QnnLog_Level_t)(logLevel < QNN_LOG_LEVEL_ERROR ? QNN_LOG_LEVEL_ERROR
                                                     : logLevel > QNN_LOG_LEVEL_DEBUG ? QNN_LOG_LEVEL_DEBUG
                                                                                      : logLevel);
             if (core.logCreate)
-                core.logCreate(qnnLogCallback, level, &p_->logHandle); // non-fatal if it fails
+                core.logCreate(qnnLogCallback, level, &p_->logHandle);
 
             if (core.backendCreate(p_->logHandle, nullptr, &p_->backend) != QNN_SUCCESS)
             {
                 logMsg("backendCreate failed");
                 return false;
             }
-            // device is optional for CPU/GPU; pass nullptr
-            if (core.contextCreate(p_->backend, nullptr, nullptr, &p_->context) != QNN_SUCCESS)
+
+            // --- create the context + obtain graph metadata (source-specific) -
+            QnnSystemContext_GraphInfo_t *graphs = nullptr;
+            uint32_t numGraphs = 0;
+            bool needFinalize = false;
+
+            if (!isBinary)
             {
-                logMsg("contextCreate failed");
-                return false;
+                // .dlc: create an empty context, then compose the DLC's graphs into it
+                if (core.contextCreate(p_->backend, nullptr, nullptr, &p_->context) != QNN_SUCCESS)
+                {
+                    logMsg("contextCreate failed");
+                    return false;
+                }
+                if (sys.systemDlcCreateFromFile(nullptr, p_->modelPath.c_str(), &p_->dlc) != QNN_SUCCESS)
+                {
+                    logMsg("systemDlcCreateFromFile('%s') failed", p_->modelPath.c_str());
+                    return false;
+                }
+                if (sys.systemDlcComposeGraphs(p_->dlc, nullptr, 0,
+                                               p_->backend, p_->context, *p_->iface,
+                                               QNN_SYSTEM_CONTEXT_GRAPH_INFO_VERSION_1,
+                                               &p_->dlcGraphs, &numGraphs) != QNN_SUCCESS ||
+                    p_->dlcGraphs == nullptr || numGraphs == 0)
+                {
+                    logMsg("systemDlcComposeGraphs failed");
+                    return false;
+                }
+                graphs = p_->dlcGraphs;
+                needFinalize = true; // composed graphs must be finalized before execute
+            }
+            else
+            {
+                // .bin: read graph metadata from the binary, then create the context from it
+                if (!readFile(p_->modelPath, p_->binaryBuffer))
+                {
+                    logMsg("failed to read context binary '%s'", p_->modelPath.c_str());
+                    return false;
+                }
+                if (sys.systemContextCreate(&p_->sysCtx) != QNN_SUCCESS)
+                {
+                    logMsg("systemContextCreate failed");
+                    return false;
+                }
+                const QnnSystemContext_BinaryInfo_t *binInfo = nullptr;
+                Qnn_ContextBinarySize_t binInfoSize = 0;
+                if (sys.systemContextGetBinaryInfo(p_->sysCtx,
+                                                   p_->binaryBuffer.data(),
+                                                   (uint64_t)p_->binaryBuffer.size(),
+                                                   &binInfo, &binInfoSize) != QNN_SUCCESS ||
+                    binInfo == nullptr)
+                {
+                    logMsg("systemContextGetBinaryInfo failed");
+                    return false;
+                }
+                binaryInfoGraphs(binInfo, &graphs, &numGraphs); // owned by sysCtx (kept alive)
+                if (graphs == nullptr || numGraphs == 0)
+                {
+                    logMsg("context binary reports no graphs");
+                    return false;
+                }
+                if (core.contextCreateFromBinary(p_->backend, nullptr, nullptr,
+                                                 p_->binaryBuffer.data(),
+                                                 (Qnn_ContextBinarySize_t)p_->binaryBuffer.size(),
+                                                 &p_->context, nullptr) != QNN_SUCCESS)
+                {
+                    logMsg("contextCreateFromBinary failed");
+                    return false;
+                }
+                needFinalize = false; // a context binary is already finalized
             }
 
-            // --- open the DLC and compose its graphs into the context --------
-            if (sys.systemDlcCreateFromFile(nullptr, p_->dlcPath.c_str(), &p_->dlc) != QNN_SUCCESS)
-            {
-                logMsg("systemDlcCreateFromFile('%s') failed", p_->dlcPath.c_str());
-                return false;
-            }
-            if (sys.systemDlcComposeGraphs(p_->dlc,
-                                           nullptr, 0,
-                                           p_->backend,
-                                           p_->context,
-                                           *p_->iface, // backendInterface (by value)
-                                           QNN_SYSTEM_CONTEXT_GRAPH_INFO_VERSION_1,
-                                           &p_->graphs,
-                                           &p_->numGraphs) != QNN_SUCCESS ||
-                p_->graphs == nullptr || p_->numGraphs == 0)
-            {
-                logMsg("systemDlcComposeGraphs failed");
-                return false;
-            }
+            // --- per graph: retrieve handle, (finalize for DLC), prep IO tensors
+            p_->numGraphs = numGraphs;
+            p_->graphHandles.assign(numGraphs, nullptr);
+            p_->inInfos.resize(numGraphs);
+            p_->outInfos.resize(numGraphs);
+            p_->inTensors.resize(numGraphs);
+            p_->outTensors.resize(numGraphs);
 
-            // --- per graph: retrieve handle, finalize, prepare IO tensors -----
-            p_->graphHandles.assign(p_->numGraphs, nullptr);
-            p_->inInfos.resize(p_->numGraphs);
-            p_->outInfos.resize(p_->numGraphs);
-            p_->inTensors.resize(p_->numGraphs);
-            p_->outTensors.resize(p_->numGraphs);
-
-            for (uint32_t g = 0; g < p_->numGraphs; ++g)
+            for (uint32_t g = 0; g < numGraphs; ++g)
             {
-                const char *name = graphName(p_->graphs[g]);
+                const char *name = graphName(graphs[g]);
                 if (core.graphRetrieve(p_->context, name, &p_->graphHandles[g]) != QNN_SUCCESS)
                 {
                     logMsg("graphRetrieve('%s') failed", name ? name : "");
                     return false;
                 }
-                if (core.graphFinalize(p_->graphHandles[g], nullptr, nullptr) != QNN_SUCCESS)
+                if (needFinalize &&
+                    core.graphFinalize(p_->graphHandles[g], nullptr, nullptr) != QNN_SUCCESS)
                 {
                     logMsg("graphFinalize('%s') failed", name ? name : "");
                     return false;
@@ -362,7 +474,7 @@ namespace ar
 
                 Qnn_Tensor_t *ins = nullptr, *outs = nullptr;
                 uint32_t nIn = 0, nOut = 0;
-                graphTensors(p_->graphs[g], &ins, &nIn, &outs, &nOut);
+                graphTensors(graphs[g], &ins, &nIn, &outs, &nOut);
 
                 auto prepare = [&](Qnn_Tensor_t *src, uint32_t n,
                                    std::vector<TensorInfo> &infos,
@@ -375,7 +487,7 @@ namespace ar
                         if (tensorDataType(src[i]) != QNN_DATATYPE_FLOAT_32)
                         {
                             logMsg("tensor '%s' has dtype %d; only FLOAT_32 is wired currently "
-                                   "(add a conversion path in DlcModel.cpp)",
+                                   "(add a conversion path in QnnModel.cpp)",
                                    tensorName(src[i]), (int)tensorDataType(src[i]));
                             return false;
                         }
@@ -386,8 +498,9 @@ namespace ar
                         infos[i].numElements = productDims(dims, rank);
 
                         // client tensor: shallow copy of the descriptor (shares the
-                        // name/dimensions owned by p_->graphs, which outlives us),
-                        // switched to a RAW client buffer we point at execute time.
+                        // name/dimensions owned by the DLC graphs array or the system
+                        // context, both kept alive for our lifetime), switched to a
+                        // RAW client buffer we point at execute time.
                         clients[i] = src[i];
                         tensorSetRawBuffer(clients[i], nullptr, 0);
                     }
@@ -404,22 +517,22 @@ namespace ar
             return true;
         }
 
-        uint32_t DlcModel::numGraphs() const
+        uint32_t QnnModel::numGraphs() const
         {
             return p_->numGraphs;
         }
 
-        const std::vector<TensorInfo> &DlcModel::inputs(uint32_t graphIdx) const
+        const std::vector<TensorInfo> &QnnModel::inputs(uint32_t graphIdx) const
         {
             return p_->inInfos.at(graphIdx);
         }
 
-        const std::vector<TensorInfo> &DlcModel::outputs(uint32_t graphIdx) const
+        const std::vector<TensorInfo> &QnnModel::outputs(uint32_t graphIdx) const
         {
             return p_->outInfos.at(graphIdx);
         }
 
-        bool DlcModel::execute(uint32_t graphIdx,
+        bool QnnModel::execute(uint32_t graphIdx,
                                const float *const *inputBuffers,
                                float *const *outputBuffers)
         {

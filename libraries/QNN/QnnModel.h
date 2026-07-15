@@ -3,12 +3,13 @@
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
-// DlcModel: a small, self-contained wrapper for loading a Qualcomm Deep Learning
-// Container (.dlc) and running its graph(s) through the public QNN API.
+// QnnModel: load a Qualcomm model -- either a Deep Learning Container (.dlc) or a
+// precompiled context binary (.bin) -- and run its graph(s) through the public QNN API.
 //
-// This is an original implementation written against the public QNN interface
-// (QnnInterface / QnnSystemInterface, QnnContext, QnnGraph, QnnTensor,
-// QnnSystemDlc). It does not use or derive from Qualcomm's SDK sample sources.
+// This is an original clean-room implementation written against the public QNN
+// interface only (QnnInterface / QnnSystemInterface, QnnSystemDlc,
+// QnnSystemContext, QnnContext, QnnGraph, QnnTensor, QnnLog) plus <dlfcn.h>. It
+// does not use or derive from Qualcomm's SDK sample sources.
 //
 // The public header intentionally exposes no QNN types (it is pimpl'd), so a
 // project can include it without the QNN SDK headers on its include path.
@@ -33,25 +34,27 @@ namespace ar
             size_t numElements = 0;     // product of dims
         };
 
-        // Loads a .dlc and runs its graphs. One instance owns one backend +
+        // Loads a model and runs its graphs. One instance owns one backend +
         // context; not copyable. All heavy resources are released in the destructor.
-        class DlcModel
+        class QnnModel
         {
         public:
-            // Paths to the QNN backend library (e.g. libQnnCpu.so / libQnnGpu.so),
-            // the .dlc model file, and the QNN System library (libQnnSystem.so).
-            DlcModel(std::string backendLibPath,
-                     std::string dlcPath,
+            // backendLibPath: QNN backend library (e.g. libQnnCpu.so / libQnnGpu.so).
+            // modelPath:      a ".dlc" (composed at load) or a ".bin" context binary
+            //                 (precompiled); the format is chosen from the extension.
+            // systemLibPath:  the QNN System library (libQnnSystem.so).
+            QnnModel(std::string backendLibPath,
+                     std::string modelPath,
                      std::string systemLibPath);
-            ~DlcModel();
+            ~QnnModel();
 
-            DlcModel(const DlcModel &) = delete;
-            DlcModel &operator=(const DlcModel &) = delete;
+            QnnModel(const QnnModel &) = delete;
+            QnnModel &operator=(const QnnModel &) = delete;
 
-            // Load both libraries, open the DLC, compose + finalize its graphs, and
-            // allocate the I/O tensors. logLevel is the QNN log level: 1=ERROR,
-            // 2=WARN, 3=INFO, 4=VERBOSE, 5=DEBUG. Returns false on any failure
-            // (details are logged). Call once before execute().
+            // Load both libraries and the model, prepare graphs and I/O tensors.
+            // logLevel is the QNN log level: 1=ERROR, 2=WARN, 3=INFO, 4=VERBOSE,
+            // 5=DEBUG. Returns false on any failure (details are logged). Call once
+            // before execute().
             bool load(int logLevel = 1);
 
             uint32_t numGraphs() const;
@@ -63,8 +66,7 @@ namespace ar
             // Run one graph: inputBuffers[i] feeds input i (sized to
             // inputs(graphIdx)[i].numElements floats), outputBuffers[i] receives
             // output i (sized to outputs(graphIdx)[i].numElements floats). Buffers
-            // are float32; any conversion to/from the tensor's native dtype is
-            // handled internally. Returns false on failure.
+            // are float32. Returns false on failure.
             bool execute(uint32_t graphIdx,
                          const float *const *inputBuffers,
                          float *const *outputBuffers);

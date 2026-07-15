@@ -13,7 +13,7 @@
 #include <cstring>
 
 // clean-room QNN wrapper (public-API only)
-#include "DlcModel.h"
+#include "QnnModel.h"
 
 // AR includes
 #include "optparse.h"
@@ -22,10 +22,10 @@
 // App parameters set by CLI args
 std::string backendPath;
 std::string systemLibraryPath;
-std::string dlcPath;
+std::string modelPath;
 int logLevel = 1; // 1=ERROR .. 5=DEBUG
 
-std::unique_ptr<ar::qnn::DlcModel> model;
+std::unique_ptr<ar::qnn::QnnModel> model;
 
 // App-specific variables
 // This project assumes a graph with a single model which has only one input and one output,
@@ -58,8 +58,8 @@ void showHelp()
         << "-------------------\n"
         << "  --qnn-backend      <FILE>   Path to a QNN backend to execute the model.\n"
         << "\n"
-        << "  --dlc-model        <FILE>   Path to the DLC file containing the model.\n"
-        << "                              Requires --qnn-system to be specified.\n"
+        << "  --qnn-model        <FILE>   Path to the model: a .dlc container or a\n"
+        << "                              .bin context binary. Requires --qnn-system.\n"
         << "\n"
         << "  --qnn-system       <FILE>   Path to the QNN System library (libQnnSystem.so),\n"
         << "                              needed when loading a model from a DLC.\n"
@@ -84,7 +84,7 @@ void processCommandLine(char **argv)
     // short-form may easily clash with the many arguments dealt with by main
     enum
     {
-        OPT_DLC_MODEL = 256,
+        OPT_QNN_MODEL = 256,
         OPT_QNN_BACKEND,
         OPT_QNN_SYSTEM,
         OPT_LOG_LEVEL,
@@ -96,7 +96,7 @@ void processCommandLine(char **argv)
     int c;
     struct optparse opts;
     struct optparse_long long_options[] = {
-        {"dlc-model", OPT_DLC_MODEL, OPTPARSE_REQUIRED},
+        {"qnn-model", OPT_QNN_MODEL, OPTPARSE_REQUIRED},
         {"qnn-backend", OPT_QNN_BACKEND, OPTPARSE_REQUIRED},
         {"qnn-system", OPT_QNN_SYSTEM, OPTPARSE_REQUIRED},
         {"log-level", OPT_LOG_LEVEL, OPTPARSE_REQUIRED},
@@ -110,15 +110,15 @@ void processCommandLine(char **argv)
     {
         switch (c)
         {
-        case OPT_DLC_MODEL:
+        case OPT_QNN_MODEL:
         {
-            char *dlcPathC = strdup(opts.optarg);
-            if (dlcPathC == NULL)
+            char *modelPathC = strdup(opts.optarg);
+            if (modelPathC == NULL)
             {
-                fprintf(stderr, "failed parsing DLC model path '%s'\n", opts.optarg);
+                fprintf(stderr, "failed parsing model path '%s'\n", opts.optarg);
                 std::exit(EXIT_FAILURE);
             }
-            dlcPath = dlcPathC;
+            modelPath = modelPathC;
             break;
         }
         case OPT_QNN_BACKEND:
@@ -196,13 +196,13 @@ int setup(struct audio_ctx *ctx, void *user_data)
 {
     processCommandLine((char **)user_data);
 
-    if (dlcPath.empty() || backendPath.empty() || systemLibraryPath.empty())
+    if (modelPath.empty() || backendPath.empty() || systemLibraryPath.empty())
     {
-        std::cerr << "qnn_sine: --dlc-model, --qnn-backend and --qnn-system are all required\n";
+        std::cerr << "qnn_sine: --qnn-model, --qnn-backend and --qnn-system are all required\n";
         return EXIT_FAILURE;
     }
 
-    model.reset(new ar::qnn::DlcModel(backendPath, dlcPath, systemLibraryPath));
+    model.reset(new ar::qnn::QnnModel(backendPath, modelPath, systemLibraryPath));
     if (!model->load(logLevel))
     {
         std::cerr << "qnn_sine: failed to load model\n";
@@ -298,6 +298,6 @@ void cleanup(struct audio_ctx *ctx, void *user_data)
         g_outputDataBuffers = nullptr;
     }
 
-    // releases the backend, context, DLC and libraries (see DlcModel destructor)
+    // releases the backend, context, model and libraries (see QnnModel destructor)
     model.reset();
 }

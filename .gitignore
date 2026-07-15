@@ -52,11 +52,3 @@ _projects/
 dependencies/QNN/include/**
 # but keep the (otherwise empty) folder versioned so the SDK has a place to go
 !dependencies/QNN/include/.gitkeep
-
-# Original QNN wrapper: derived from Qualcomm SDK sample code (proprietary, not
-# redistributable). Kept locally as a private reference; superseded in the repo
-# by the clean-room libraries/QNN/DlcModel.{h,cpp}.
-libraries/QNN/QnnModel.cpp
-libraries/QNN/QnnModel.h
-libraries/QNN/TensorTools.cpp
-libraries/QNN/TensorTools.h

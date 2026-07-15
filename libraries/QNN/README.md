@@ -1,15 +1,19 @@
 # QNN Integration
 
-This folder provides a small, self-contained wrapper for loading Qualcomm Deep
-Learning Container (`.dlc`) models and running them inside the audio engine. The
-entry point is `ar::qnn::DlcModel` in [`DlcModel.h`](DlcModel.h).
+This folder provides a small, self-contained wrapper for loading a Qualcomm model
+and running it inside the audio engine. The entry point is `ar::qnn::QnnModel` in
+[`QnnModel.h`](QnnModel.h). It loads either format, chosen by file extension:
 
-`DlcModel` is an **original implementation written against the public QNN API
-only** (`QnnInterface` / `QnnSystemInterface`, `QnnSystemDlc`, `QnnContext`,
-`QnnGraph`, `QnnTensor`, `QnnLog`) plus `dlopen`. It does **not** use or derive
-from Qualcomm's SDK sample sources, so this wrapper can live in the repository.
-The QNN SDK headers it compiles against are proprietary and are **not**
-redistributed here — you supply them from your own licensed SDK (see below).
+- **`.dlc`** — a Deep Learning Container, composed into a context at load time.
+- **`.bin`** — a precompiled context binary (faster init; e.g. for HTP), loaded
+  directly.
+
+`QnnModel` is an **original implementation written against the public QNN API
+only** (`QnnInterface` / `QnnSystemInterface`, `QnnSystemDlc`, `QnnSystemContext`,
+`QnnContext`, `QnnGraph`, `QnnTensor`, `QnnLog`) plus `dlopen`. It does **not**
+use or derive from Qualcomm's SDK sample sources, so this wrapper can live in the
+repository. The QNN SDK headers it compiles against are proprietary and are
+**not** redistributed here — you supply them from your own licensed SDK (see below).
 
 ## SDK setup
 
@@ -36,9 +40,9 @@ redistributable. No QNN sample-app source is needed.)
 ## Typical flow
 
 ```cpp
-#include "DlcModel.h"
+#include "QnnModel.h"
 
-ar::qnn::DlcModel model(backendPath, dlcPath, systemLibPath);
+ar::qnn::QnnModel model(backendPath, modelPath, systemLibPath);  // modelPath: .dlc or .bin
 if (!model.load(/*logLevel=*/1))          // 1=ERROR .. 5=DEBUG
     return;                               // load logs the reason on failure
 
@@ -50,9 +54,9 @@ const auto& out = model.outputs();
 model.execute(0, inputBuffers, outputBuffers);   // float in -> float out
 ```
 
-The destructor releases the backend, context, DLC handle and libraries; there is
-no separate teardown call. `execute()` is fp32 zero-copy (the tensors point
-directly at your buffers) — suitable for the real-time audio thread.
+The destructor releases the backend, context, model and libraries; there is no
+separate teardown call. `execute()` is fp32 zero-copy (the tensors point directly
+at your buffers) — suitable for the real-time audio thread.
 
 > A DLC (Deep Learning Container) is a Qualcomm file format containing a model
 > that can be loaded and run with the QNN SDK. See the
@@ -68,7 +72,7 @@ model batch size, e.g.:
 
 ```
 ./ar_audioengine -p 512 \
-  --dlc-model  /path/to/full_oscillator_512x2.dlc \
+  --qnn-model   /path/to/full_oscillator_512x2.dlc \
   --qnn-backend /path/to/libQnnCpu.so \
   --qnn-system  /path/to/libQnnSystem.so
 ```

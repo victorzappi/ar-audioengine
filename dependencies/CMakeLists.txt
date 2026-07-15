@@ -19,7 +19,7 @@ set(SEARCH_STRINGS
     "RTNeural/RTNeural.h\;rtneural"
     "OrtModel.h\;OrtModel"
     "NAM/get_dsp.h\;NeuralAmpModelerCore"
-    "DlcModel.h"
+    "QnnModel.h"
 )
 
 foreach(VAR_NAME IN LISTS VARIABLE_NAMES)
@@ -139,7 +139,7 @@ if (ADD_QNN)
         message(FATAL_ERROR "QNN headers not found at ${QNN_INCLUDE_DIR}")
     endif()
 
-    # The clean-room wrapper (libraries/QNN/DlcModel) uses only the public QNN
+    # The clean-room wrapper (libraries/QNN/QnnModel) uses only the public QNN
     # headers plus dlopen -- it does NOT compile any QNN SDK sample source. So we
     # only need the public include path and libdl on the include/link line.
     #
