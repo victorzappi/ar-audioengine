@@ -1,47 +1,44 @@
 /*
- * Copyright 2026 Victor Zappi
+ * Copyright 2026 Victor Zappi, Avery Huang
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 #include <math.h>
 #include <cstdlib>
+#include <cstdio>
+#include <cstring>
 
-// QNN SDK
-#include <Logger.hpp>
-
-// QNN library
-#include "QnnModel.h"
+// clean-room QNN wrapper (public-API only)
+#include "DlcModel.h"
 
 // AR includes
 #include "optparse.h"
 #include "render.h"
 
-using namespace qnn::tools;
-
-int longIndex = 0;
-int opt = 0;
 // App parameters set by CLI args
 std::string backendPath;
-QnnLog_Level_t logLevel{QNN_LOG_LEVEL_ERROR};
 std::string systemLibraryPath;
 std::string dlcPath;
+int logLevel = 1; // 1=ERROR .. 5=DEBUG
 
-std::unique_ptr<QnnModel> model;
+std::unique_ptr<ar::qnn::DlcModel> model;
 
 // App-specific variables
 // This project assumes a graph with a single model which has only one input and one output,
 // though that isn't always the case.
-const int g_graphIdx = 0;
+const uint32_t g_graphIdx = 0;
 const int g_inputIdx = 0;
 const int g_outputIdx = 0;
 
-// For each graph, dedicate an array of float* to store input/output data to be copied to/from that graph's IO tensors.
-// Each float* will contain the elements of an n-dimensional tensor, flattened.
+// One flattened float buffer per input/output tensor of the graph.
 float **g_inputDataBuffers = nullptr;
 float **g_outputDataBuffers = nullptr;
+size_t g_numInputs = 0;
+size_t g_numOutputs = 0;
 
 // This project uses the model to generate a periodic wave.
 float frequency = 440;
@@ -84,7 +81,7 @@ void processCommandLine(char **argv)
 {
     // long-only option ids: start past the ASCII range so optparse treats them as
     // long-form only, i.e. there are no single-char short options
-    // short-form may easily clash with the manu arguments dealt with by main
+    // short-form may easily clash with the many arguments dealt with by main
     enum
     {
         OPT_DLC_MODEL = 256,
@@ -148,20 +145,19 @@ void processCommandLine(char **argv)
         }
         case OPT_LOG_LEVEL:
         {
-            // accept any QNN log level directly (1=ERROR .. 5=DEBUG); the numeric
-            // values map 1:1 to QnnLog_Level_t, so no per-level switch is needed
+            // accept any QNN log level directly (1=ERROR .. 5=DEBUG)
             unsigned int logLevel_i;
             if (sscanf(opts.optarg, "%u", &logLevel_i) != 1)
             {
                 fprintf(stderr, "failed parsing log level '%s'\n", opts.optarg);
                 std::exit(EXIT_FAILURE);
             }
-            if (logLevel_i < QNN_LOG_LEVEL_ERROR || logLevel_i > QNN_LOG_LEVEL_DEBUG)
+            if (logLevel_i < 1 || logLevel_i > 5)
             {
                 fprintf(stderr, "invalid log level '%u' (must be 1=ERROR .. 5=DEBUG)\n", logLevel_i);
                 std::exit(EXIT_FAILURE);
             }
-            logLevel = (QnnLog_Level_t)logLevel_i;
+            logLevel = (int)logLevel_i;
             break;
         }
         case OPT_FREQ:
@@ -198,84 +194,61 @@ void processCommandLine(char **argv)
 
 int setup(struct audio_ctx *ctx, void *user_data)
 {
-    // Initialize the QNN logger - this lets us use the `QNN_INFO/WARN/ERROR` macros
-    // This logger will also be used in the QNN backend.
-    if (!qnn::log::initializeLogging())
-    {
-        std::cerr << "ERROR: Unable to initialize logging!\n";
-        return EXIT_FAILURE;
-    }
-
-    if (!qnn::log::setLogLevel(logLevel))
-    {
-        std::cerr << "ERROR: invalid log level given";
-        return EXIT_FAILURE;
-    }
-
     processCommandLine((char **)user_data);
-    model =
-        std::unique_ptr<QnnModel>(new QnnModel(
-            backendPath,
-            dlcPath,
-            systemLibraryPath));
 
-    if (nullptr == model)
+    if (dlcPath.empty() || backendPath.empty() || systemLibraryPath.empty())
     {
+        std::cerr << "qnn_sine: --dlc-model, --qnn-backend and --qnn-system are all required\n";
         return EXIT_FAILURE;
     }
 
-    QNN_INFO("Setting up model");
-    model->setup();
+    model.reset(new ar::qnn::DlcModel(backendPath, dlcPath, systemLibraryPath));
+    if (!model->load(logLevel))
+    {
+        std::cerr << "qnn_sine: failed to load model\n";
+        return EXIT_FAILURE;
+    }
 
-    const auto &inputTensors = model->getInputTensors(g_graphIdx);
-    const auto &outputTensors = model->getOutputTensors(g_graphIdx);
-
-    std::vector<size_t> inputDimensions = inputTensors[g_inputIdx].dimensions;
-    std::vector<size_t> outputDimensions = outputTensors[g_outputIdx].dimensions;
+    const std::vector<ar::qnn::TensorInfo> &inputs = model->inputs(g_graphIdx);
+    const std::vector<ar::qnn::TensorInfo> &outputs = model->outputs(g_graphIdx);
 
     /*
         Make sure the model's IO dimensions are what we expect.
-        This specific project expects a model to take amplitude and phase inputs in batches of period_size (i.e. dimension [period_size, 2])
-        and output an equal batch of samples (i.e. dimension [period_size, 1]).
-        This will vary depending on the model you use.
+        This specific project expects a model to take amplitude and phase inputs in batches of
+        period_size (i.e. dimension [period_size, 2]) and output an equal batch of samples
+        (i.e. dimension [period_size, 1]). This will vary depending on the model you use.
     */
-    if (inputDimensions.size() != 2 || inputDimensions[0] != ctx->period_size || inputDimensions[1] != 2)
+    const std::vector<uint32_t> &inDims = inputs[g_inputIdx].dims;
+    const std::vector<uint32_t> &outDims = outputs[g_outputIdx].dims;
+
+    if (inDims.size() != 2 || inDims[0] != ctx->period_size || inDims[1] != 2)
     {
         std::cerr << "Given model has incorrect input dimensions (expected [" << ctx->period_size << ", 2]): [ ";
-        for (const size_t &dim : inputDimensions)
-        {
+        for (uint32_t dim : inDims)
             std::cerr << dim << " ";
-        }
+        std::cerr << "]\n";
+        return EXIT_FAILURE;
+    }
+    if (outDims.size() != 2 || outDims[0] != ctx->period_size || outDims[1] != 1)
+    {
+        std::cerr << "Given model has incorrect output dimensions (expected [" << ctx->period_size << ", 1]): [ ";
+        for (uint32_t dim : outDims)
+            std::cerr << dim << " ";
         std::cerr << "]\n";
         return EXIT_FAILURE;
     }
 
-    if (outputDimensions.size() != 2 || outputDimensions[0] != ctx->period_size || outputDimensions[1] != 1)
-    {
-        std::cerr << "Given model has incorrect output dimensions (expected [" << ctx->period_size << "]): [ ";
-        for (const size_t &dim : outputDimensions)
-        {
-            std::cerr << dim << " ";
-        }
-        std::cerr << "]\n";
+    // Allocate one flat float buffer per input/output tensor.
+    g_numInputs = inputs.size();
+    g_numOutputs = outputs.size();
+    g_inputDataBuffers = (float **)calloc(g_numInputs, sizeof(float *));
+    g_outputDataBuffers = (float **)calloc(g_numOutputs, sizeof(float *));
+    if (!g_inputDataBuffers || !g_outputDataBuffers)
         return EXIT_FAILURE;
-    }
-
-    // Allocate flat buffers for a graph based on the input or output tensors for that graph
-    QNN_INFO("Preparing IO buffers");
-    if (iotensor::StatusCode::SUCCESS !=
-        iotensor::allocateIOFloatBuffer(model->getInputTensors(g_graphIdx), g_inputDataBuffers))
-    {
-        QNN_ERROR("Input buffer allocation failure");
-        return EXIT_FAILURE;
-    }
-
-    if (iotensor::StatusCode::SUCCESS !=
-        iotensor::allocateIOFloatBuffer(model->getOutputTensors(g_graphIdx), g_outputDataBuffers))
-    {
-        QNN_ERROR("Output buffer allocation failure");
-        return EXIT_FAILURE;
-    }
+    for (size_t i = 0; i < g_numInputs; ++i)
+        g_inputDataBuffers[i] = (float *)calloc(inputs[i].numElements, sizeof(float));
+    for (size_t i = 0; i < g_numOutputs; ++i)
+        g_outputDataBuffers[i] = (float *)calloc(outputs[i].numElements, sizeof(float));
 
     phase_inc = 2.0f * M_PI * frequency / (float)(ctx->sample_rate);
 
@@ -284,77 +257,47 @@ int setup(struct audio_ctx *ctx, void *user_data)
 
 void render(struct audio_ctx *ctx, void *user_data)
 {
-    /**
-     * General flow for working with QNN models:
-     * 1. Write float inputs into an input buffer for a graph
-     * 2. Pass that input buffer, along with an output float buffer, to `executeGraph()`
-     *    This will populate the output buffer with the model's outputs
-     * 3. Copy output buffer data into audio context's audio buffer
-     */
-    
+    // 1. write float inputs (amplitude, phase) into the input buffer, row-major:
+    //    the last dimension (2 features) varies fastest.
     for (size_t frame = 0; frame < ctx->period_size; ++frame)
     {
-        /**
-         * The QNN SDK (and by extension, QnnModel) expects data in row-major order (the same way numpy stores by default)
-         * In other words, the last dimension varies the fastest, and the first dimension varies the slowest
-        **/ 
-        const size_t inputOffset = frame * 2; // 2 is the number of input features we have
+        const size_t inputOffset = frame * 2; // 2 input features
         g_inputDataBuffers[g_inputIdx][inputOffset] = amplitude;
         g_inputDataBuffers[g_inputIdx][inputOffset + 1] = phase;
 
         phase = fmod(phase + phase_inc, 2.0f * M_PI);
     }
 
-    // Run the model with your inputs and write outputs to output buffer
-    if (StatusCode::SUCCESS != model->executeGraph(g_graphIdx, g_inputDataBuffers, g_outputDataBuffers))
-    {
-        QNN_ERROR("Load And Execute failure");
+    // 2. run the model
+    if (!model->execute(g_graphIdx, g_inputDataBuffers, g_outputDataBuffers))
         return;
-    }
 
-    // Write outputs to audio buffer
-    for (size_t frame = 0; frame < ctx->period_size; frame++)
+    // 3. write the model outputs to the audio buffer (same sample to every channel)
+    for (size_t frame = 0; frame < ctx->period_size; ++frame)
     {
         const float sample = g_outputDataBuffers[g_outputIdx][frame];
-        for (unsigned int channel = 0; channel < ctx->channels; channel++)
-        {
+        for (unsigned int channel = 0; channel < ctx->channels; ++channel)
             ctx->audio_buffer[(frame * ctx->channels) + channel] = sample;
-        }
     }
 }
 
 void cleanup(struct audio_ctx *ctx, void *user_data)
 {
-    // Free input/output float buffers
     if (g_inputDataBuffers != nullptr)
     {
-        const auto &inputTensors = model->getInputTensors(g_graphIdx);
-        for (size_t i = 0; i < inputTensors.size(); ++i)
-        {
+        for (size_t i = 0; i < g_numInputs; ++i)
             free(g_inputDataBuffers[i]);
-        }
         free(g_inputDataBuffers);
         g_inputDataBuffers = nullptr;
     }
-
     if (g_outputDataBuffers != nullptr)
     {
-        const auto &outputTensors = model->getOutputTensors(g_graphIdx);
-        for (size_t i = 0; i < outputTensors.size(); ++i)
-        {
+        for (size_t i = 0; i < g_numOutputs; ++i)
             free(g_outputDataBuffers[i]);
-        }
         free(g_outputDataBuffers);
         g_outputDataBuffers = nullptr;
     }
 
-    // Free all other model resources
-    if (model != nullptr)
-    {
-        if (StatusCode::SUCCESS != model->cleanup())
-        {
-            QNN_ERROR("Failure cleaning up model - some resources may not have been freed!");
-        }
-        model.reset();
-    }
+    // releases the backend, context, DLC and libraries (see DlcModel destructor)
+    model.reset();
 }

@@ -19,7 +19,7 @@ set(SEARCH_STRINGS
     "RTNeural/RTNeural.h\;rtneural"
     "OrtModel.h\;OrtModel"
     "NAM/get_dsp.h\;NeuralAmpModelerCore"
-    "QnnModel.h\;QnnTypeMacros.hpp\;Qnn"
+    "DlcModel.h"
 )
 
 foreach(VAR_NAME IN LISTS VARIABLE_NAMES)
@@ -139,16 +139,12 @@ if (ADD_QNN)
         message(FATAL_ERROR "QNN headers not found at ${QNN_INCLUDE_DIR}")
     endif()
 
-    # Build QNN static library from source files
-    file(GLOB_RECURSE QNN_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/QNN/tools/*.cpp")
-    list(FILTER QNN_SOURCES EXCLUDE REGEX "/DspLog/")
-    list(FILTER QNN_SOURCES EXCLUDE REGEX "/PAL/src/windows")
-    add_library(QNN STATIC ${QNN_SOURCES})
-
-    target_link_libraries(QNN PRIVATE dl)
-
-    # Add both root QNN headers and one-level backend folders (GPU, HTP, etc.)
-    # so consumers can include headers with or without folder prefixes.
+    # The clean-room wrapper (libraries/QNN/DlcModel) uses only the public QNN
+    # headers plus dlopen -- it does NOT compile any QNN SDK sample source. So we
+    # only need the public include path and libdl on the include/link line.
+    #
+    # Add the root headers and the one-level subfolders (System, HTP, GPU, ...) so
+    # headers can be included with or without a folder prefix.
     set(QNN_INCLUDE_DIRS "${QNN_INCLUDE_DIR}")
     file(GLOB QNN_INCLUDE_CHILD_PATHS LIST_DIRECTORIES TRUE "${QNN_INCLUDE_DIR}/*")
     foreach(QNN_INCLUDE_CHILD_PATH IN LISTS QNN_INCLUDE_CHILD_PATHS)
@@ -157,25 +153,7 @@ if (ADD_QNN)
         endif()
     endforeach()
 
-    # Dynamically add all include directories from libraries
-    set(QNN_LIBRARIES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/QNN/tools")
-    list(APPEND QNN_INCLUDE_DIRS "${QNN_LIBRARIES_DIR}")
-    file(GLOB QNN_LIB_PATHS LIST_DIRECTORIES TRUE "${QNN_LIBRARIES_DIR}/*")
-    foreach(QNN_LIB_PATH IN LISTS QNN_LIB_PATHS)
-        if(IS_DIRECTORY "${QNN_LIB_PATH}")
-            list(APPEND QNN_INCLUDE_DIRS "${QNN_LIB_PATH}")
-            # Also add include subdirectories if they exist
-            if(EXISTS "${QNN_LIB_PATH}/include")
-                list(APPEND QNN_INCLUDE_DIRS "${QNN_LIB_PATH}/include")
-            endif()
-        endif()
-    endforeach()
-
-    target_include_directories(QNN
-        PUBLIC
-            ${QNN_INCLUDE_DIRS}
-    )
-
-    target_link_libraries(dependencies INTERFACE QNN)
+    target_include_directories(dependencies INTERFACE ${QNN_INCLUDE_DIRS})
+    target_link_libraries(dependencies INTERFACE dl)
 endif()
 #-------------------------------------------------------------------------
