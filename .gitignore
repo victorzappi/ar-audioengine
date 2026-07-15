@@ -50,10 +50,8 @@ _projects/
 
 # Keep QNN headers out of git, since we're not allowed to distribute them
 dependencies/QNN/include/**
-dependencies/QNN/tools/**
-# but keep the (otherwise empty) folders versioned so the SDK has a place to go
+# but keep the (otherwise empty) folder versioned so the SDK has a place to go
 !dependencies/QNN/include/.gitkeep
-!dependencies/QNN/tools/.gitkeep
 
 # Original QNN wrapper: derived from Qualcomm SDK sample code (proprietary, not
 # redistributable). Kept locally as a private reference; superseded in the repo

@@ -18,15 +18,15 @@ source is required.
 
 1. Download the [Qualcomm AI Runtime SDK / Neural Processing SDK](https://www.qualcomm.com/developer/software/neural-processing-sdk-for-ai).
    This documentation refers to `$QNN_SDK_ROOT`, i.e. `<download location>/qairt/<version>`
-   (e.g. `~/qairt/2.45.0.260326`).
+   (e.g. `~/qairt/2.48.0.260626`).
 2. Copy the QNN SDK headers into `dependencies/QNN/include`:
    ```
    cp -r $QNN_SDK_ROOT/include/QNN/* dependencies/QNN/include
    ```
 
-That's it — the headers are enough. (The `dependencies/QNN/include` and
-`dependencies/QNN/tools` folders are kept in the repo but their contents are
-gitignored, since the SDK is not redistributable.)
+That's it — the headers are enough. (The `dependencies/QNN/include` folder is
+kept in the repo but its contents are gitignored, since the SDK is not
+redistributable. No QNN sample-app source is needed.)
 
 > Backend and system libraries are found under `$QNN_SDK_ROOT/lib/<target arch>`.
 > For an OE Linux device targeting the CPU, that is
