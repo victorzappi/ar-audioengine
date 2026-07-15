@@ -14,9 +14,6 @@ configure, build and clean commands in CMakeLists.txt
 
 // next steps:
 // _QNN:
-// __ merge
-// __test and debug
-// __improve alignment with new codebaase
 // __improve doc
 // _rename audio_ctx and in all projects + align code style across projects: 
 // __audio_buffer -> audio_out
@@ -443,9 +440,9 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     struct audio_ctx actx = create_audio_ctx(pb, cap);
 
     // user API function
-    if (setup(&actx, nullptr)) {
+    if (setup(&actx, settings->user_argv)) {
         fprintf(stderr, "setup function failed\n");
-        cleanup(&actx, nullptr);
+        cleanup(&actx, settings->user_argv);
         pcm_stop(pb->pcm);
         if (cap) pcm_stop(cap->pcm);
         return -2;
@@ -482,7 +479,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         }
 
         // user API function
-        render(&actx, nullptr);
+        render(&actx, settings->user_argv);
 
         if (!pb->is_float)
             fromFloatToRaw_int(pb);
@@ -499,7 +496,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     //------------------------
 
     // user API function
-    cleanup(&actx, nullptr);
+    cleanup(&actx, settings->user_argv);
     // don't call pcm_drain(), it will seg-fault!
     pcm_stop(pb->pcm);
     if (cap) pcm_stop(cap->pcm);

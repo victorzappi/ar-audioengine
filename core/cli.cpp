@@ -31,6 +31,7 @@ void init_settings(struct settings *settings)
     settings->virtual_card = 100;
     settings->physical_card = 0;
     settings->full_duplex = true;
+    settings->user_argv = nullptr;  // populated by parse_cli
 
     // playback stream
     struct pcm_stream *playback = &settings->playback;
@@ -128,6 +129,9 @@ void cleanup_settings(struct settings *settings)
 {
     cleanup_stream(&settings->playback);
     cleanup_stream(&settings->capture);
+    // only the pointer array is ours; the strings it points to belong to argv
+    free(settings->user_argv);
+    settings->user_argv = nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +149,8 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-r | --rate <rate>                     The audio sample rate (copied to both playback and capture)\n");
     fprintf(stderr, "-u | --no-capture                      Disable full-duplex (playback only)\n");
     fprintf(stderr, "-h | --help                            Print this help and exit\n");
+    fprintf(stderr, "\nAny unrecognized options and trailing arguments are forwarded to the project\n");
+    fprintf(stderr, "(as setup/render/cleanup's user_data, argv-style).\n");
 
     fprintf(stderr, "\nPlayback options:\n");
     fprintf(stderr, "-d | --playback-virtual-device <num>   The virtual device number that represents the frontend\n");
@@ -189,8 +195,20 @@ static void print_usage(const char *argv0)
 
 int parse_cli(int argc, char **argv, struct settings *settings)
 {
-    (void)argc;
     int c;
+
+    // collect args we don't recognize (and trailing positionals) to forward to
+    // the project via user_data. worst case is every arg unrecognized, plus the
+    // program name in slot 0 and a NULL terminator. stored in settings so
+    // cleanup_settings frees it even on the error/help returns below.
+    char **unrecognized = (char **)calloc((size_t)argc + 2, sizeof(char *));
+    if (unrecognized == nullptr) {
+        fprintf(stderr, "failed allocating argument-forwarding buffer\n");
+        return -1;
+    }
+    settings->user_argv = unrecognized;
+    int n_unrecognized = 0;
+    unrecognized[n_unrecognized++] = argv[0];  // project's optparse skips slot 0
 
     // long-only option ids (no short flag); start past the ASCII range so they
     // never collide with the single-char options
@@ -539,9 +557,35 @@ int parse_cli(int argc, char **argv, struct settings *settings)
             break;
 
         case '?':
-            fprintf(stderr, "%s\n", opts.errmsg);
-            return -1;
+            // not one of ours: forward the option (and any attached value) to
+            // the project instead of failing. the offending token sits at
+            // argv[optind - 1] after optparse advances past it.
+            unrecognized[n_unrecognized++] = argv[opts.optind - 1];
+            if (opts.optarg) {
+                unrecognized[n_unrecognized++] = opts.optarg;
+            } else {
+                char *next = argv[opts.optind];
+                if (next != nullptr && next[0] != '-') {
+                    unrecognized[n_unrecognized++] = next;
+                    opts.optind++;
+                }
+            }
+            break;
         }
+    }
+
+    // trailing positional args (optparse stops at the first non-option) also go
+    // to the project, then NULL-terminate the argv-style array
+    for (int i = opts.optind; i < argc; i++)
+        unrecognized[n_unrecognized++] = argv[i];
+    unrecognized[n_unrecognized] = nullptr;
+
+    // report what is being handed off (slot 0 is the program name, so > 1 means
+    // there is at least one forwarded token)
+    if (n_unrecognized > 1) {
+        printf("Arguments not recognized by main, forwarded to the project: ");
+        for (int i = 1; i < n_unrecognized; i++)
+            printf("%s%s", unrecognized[i], (i < n_unrecognized - 1) ? ", " : "\n");
     }
 
     return 0;

@@ -43,6 +43,11 @@ struct settings {
 
     struct pcm_stream playback;    // PCM_OUT
     struct pcm_stream capture;     // PCM_IN
+
+    // args main didn't recognize (plus trailing positionals), forwarded to the
+    // project as setup/render/cleanup's user_data. NULL-terminated, argv-style
+    // with the program name in slot 0 so a project's own optparse works as usual.
+    char **user_argv;
 };
 
 // set defaults for both streams; call before parse_cli
