@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026 Victor Zappi, Jason Hoopes
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
+ */
+
 #include "OrtModel.h"
 #include <iostream>
 #include <thread>

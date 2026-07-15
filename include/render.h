@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026 Victor Zappi
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
+ */
+
 // Audio context structure (high-level audio buffer processing)
 struct audio_ctx {
     const float * const input_buffer;  // capture samples for this period (nullptr in playback-only mode)

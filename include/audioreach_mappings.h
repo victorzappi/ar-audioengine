@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026 Victor Zappi
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
+ */
+
 #ifndef AUDIOREACH_MAPPINGS_H
 #define AUDIOREACH_MAPPINGS_H
 

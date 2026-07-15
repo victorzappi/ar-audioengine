@@ -1,5 +1,5 @@
 /*
- * Copyright 2026 Victor Zappi
+ * Copyright 2026 Victor Zappi, Gautham Srinivasan
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 

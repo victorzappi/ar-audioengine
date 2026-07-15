@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026 Victor Zappi
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
+ */
+
 // hw_mixer.h
 #ifndef HW_MIXER_H
 #define HW_MIXER_H

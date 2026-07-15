@@ -1,4 +1,9 @@
 /*
+ * Copyright 2026 Victor Zappi, Gautham Srinivasan
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
+ */
+
+/*
     BRAVE PCA Streaming Decoder
     ============================
     Loads brave_acoustic_drumset_pca_decoder_4_128.onnx and generates

@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026 Victor Zappi, Jason Hoopes
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
+ */
+
 #include "onnxruntime_cxx_api.h"
 #include <string>
 
