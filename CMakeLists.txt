@@ -126,7 +126,7 @@ endif()
 
 # board-specific xml file paths 
 if(NOT MIXER_PATHS)
-    set(MIXER_PATHS "/etc/mixer_paths_QCS6490_RB3Gen2.xml")
+    set(MIXER_PATHS "/etc/mixer_paths_qcs6490_rb3gen2.xml")
 endif()
 if(NOT BACKEND_CONF_FILE)
     set(BACKEND_CONF_FILE "/etc/backend_conf.xml")

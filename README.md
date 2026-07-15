@@ -73,7 +73,6 @@ cmake --build build
 
 The `PROJECT_PATH` can be relative to the source directory or absolute. The specified folder must contain a `render.cpp` file. All `.cpp` files in that folder are compiled, and the folder is added to the include path.
 
-
 ### Switching projects
 
 CMake caches the project path. To switch, either delete the build directory:

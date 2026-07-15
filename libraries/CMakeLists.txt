@@ -15,3 +15,13 @@ if(ADD_ONNXRUNTIME)
     target_include_directories(OrtModel PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/OrtModel)
     target_link_libraries(libraries INTERFACE OrtModel)
 endif()
+
+if(ADD_QNN)
+    add_library(QnnModel STATIC
+        QNN/QnnModel.cpp
+        QNN/TensorTools.cpp
+    )
+    target_include_directories(QnnModel PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/QNN)
+    target_link_libraries(QnnModel PUBLIC dependencies)
+    target_link_libraries(libraries INTERFACE QnnModel)
+endif()
