@@ -46,8 +46,10 @@ ar-audioengine/
 │   ├── audioreach_mappings.h
 │   └── optparse.h
 ├── projects/               # User audio projects
-│   └── sine/
-│       └── render.cpp      # Example: sine wave generator
+│   ├── sine/
+│   │   └── render.cpp      # Example: sine wave generator
+│   └── passthrough/
+│       └── render.cpp      # Example: first capture channel -> all playback channels
 ├── CMakeLists.txt
 ├── LICENSE
 └── README.md
@@ -146,6 +148,7 @@ long options).
 | `-q`, `--period-count` | Period count (both streams) | `4` |
 | `-r`, `--rate` | Sample rate (both streams) | `48000` |
 | `-u`, `--no-capture` | Disable capture (playback only) | full duplex on |
+| `-a`, `--echo-reference` | Enable the capture←playback echo reference path (only applied when capture is active) | `off` |
 | `-h`, `--help` | Print help and exit | |
 
 #### Playback
@@ -179,10 +182,10 @@ long options).
 | `-B`, `--capture-bits` | Bits per sample | `16` |
 | `-F`, `--capture-float` | Use floating-point PCM | `off` |
 | `-O`, `--capture-path` | Hardware mixer capture path | `speaker-mic` |
-| `-W`, `--streamtx` | Stream graph key value | `0` |
+| `-W`, `--streamtx` | Stream graph key value | `PCM_RECORD` |
 | `-X`, `--streampp-tx` | Stream PP graph key value | `0` |
 | `-Y`, `--devicepp-tx` | Device PP graph key value | `0` |
-| `-Z`, `--devicetx` | Device graph key value | `0` |
+| `-Z`, `--devicetx` | Device graph key value | `SPEAKER_MIC` |
 | `-I`, `--instancetx` | Instance graph key value | `INSTANCE_1` |
 | `--capture-period-size` / `-count` / `--capture-rate` | Per-stream overrides of the shared values | shared |
 

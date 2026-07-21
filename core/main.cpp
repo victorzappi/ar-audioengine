@@ -13,8 +13,7 @@ configure, build and clean commands in CMakeLists.txt
 */
 
 // next steps:
-// _QNN:
-// __improve doc
+// _improve doc: general, qnn, onnx and maybe rtneural
 // _rename audio_ctx and in all projects + align code style across projects: 
 // __audio_buffer -> audio_out
 // __input_buffer -> audio_in
@@ -168,7 +167,7 @@ static int resolve_stream_names_dir(const char *cards_xml_path, unsigned int vir
     if (auto_retrieve) {
         if (set_frontend_name(cards_xml_path, virtual_card, stream->virtual_device,
                             &stream->frontend_name) != 0) {
-            fprintf(stderr, "Frontend not found for virtual card %u device %u in \"%s\"\n",
+            fprintf(stderr, "Frontend not found for virtual card %u device %u in '%s'\n",
                     virtual_card, stream->virtual_device, cards_xml_path);
             return -1;
         }
@@ -459,6 +458,14 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         return -1;
     }
 
+    if (cap && settings->echo_reference) {
+        printf("Enabling echo reference path from playback to capture\n");
+        if (set_agm_ecref_path(settings->capture.frontend_name, settings->playback.backend_name, true)) {
+            printf("Could not enable echo reference path\n");
+        }
+    }
+
+
     // catch ctrl-c to shutdown cleanly
     signal(SIGINT, sig_handler);
 
@@ -498,8 +505,13 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     // user API function
     cleanup(&actx, settings->user_argv);
     // don't call pcm_drain(), it will seg-fault!
+
+    if (cap) {
+        if (settings->echo_reference)
+            set_agm_ecref_path(settings->capture.frontend_name, settings->playback.backend_name, false);
+        pcm_stop(cap->pcm);
+    }
     pcm_stop(pb->pcm);
-    if (cap) pcm_stop(cap->pcm);
 
     return ret;
 }

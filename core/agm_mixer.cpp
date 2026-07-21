@@ -581,6 +581,40 @@ int connect_agm_frontend_to_backend(char* frontend_name, char* backend_name, boo
     return ret;
 }
 
+int set_agm_ecref_path(char* cp_frontend_name, char* pb_backend_name, bool enable)
+{
+    printf("---set_agm_ecref_path\n");
+
+    char *control;
+    char *mixer_str;
+    char *mixer_enum;
+    int ret = 0;
+
+    control = (char *)"echoReference";
+
+    // Construct mixer control string
+    mixer_str = build_mixer_control_string(cp_frontend_name, control);
+    if (!mixer_str) {
+        return -ENOMEM;
+    }
+ 
+    if (enable)
+        mixer_enum = pb_backend_name;
+    else
+        mixer_enum = (char *)"ZERO";
+    
+    // Set the ctl enum via a string using helper function
+    ret = set_mixer_ctl_string(mixer_str, mixer_enum);
+
+    // Print success message with the mixer control and the enum/string
+    if (ret == 0) {
+        printf("---\t\tmixer ctl: %s %s\n", mixer_str, mixer_enum);
+    }
+
+    free(mixer_str);
+    return ret;
+}
+
 void start_tag(void *userdata, const XML_Char *tag_name, const XML_Char **attr)
 {
     struct device_config *config = (struct device_config *)userdata;
@@ -1341,7 +1375,6 @@ int inspect_agm_mfc(char *frontend_name, uint32_t miid)
 
     return ret;
 }
-
 
 int inspect_agm_dma_sink(char *frontend_name, uint32_t miid)
 {

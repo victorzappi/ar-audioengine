@@ -40,6 +40,8 @@ struct settings {
     unsigned int virtual_card;     // CLI -c
     unsigned int physical_card;    // CLI -s
     bool full_duplex;              // defaults on; -u/--no-capture disables capture
+    bool echo_reference;           // defaults off; -a/--echo-reference enables the
+                                   // capture<-playback echo reference (only if capture is active)
 
     struct pcm_stream playback;    // PCM_OUT
     struct pcm_stream capture;     // PCM_IN

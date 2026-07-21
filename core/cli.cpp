@@ -31,6 +31,7 @@ void init_settings(struct settings *settings)
     settings->virtual_card = 100;
     settings->physical_card = 0;
     settings->full_duplex = true;
+    settings->echo_reference = false;
     settings->user_argv = nullptr;  // populated by parse_cli
 
     // playback stream
@@ -148,6 +149,7 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-q | --period-count <count>            The number of PCM periods (copied to both playback and capture)\n");
     fprintf(stderr, "-r | --rate <rate>                     The audio sample rate (copied to both playback and capture)\n");
     fprintf(stderr, "-u | --no-capture                      Disable full-duplex (playback only)\n");
+    fprintf(stderr, "-a | --echo-reference                  Enable the capture<-playback echo reference path (only if capture is active; default off)\n");
     fprintf(stderr, "-h | --help                            Print this help and exit\n");
     fprintf(stderr, "\nAny unrecognized options and trailing arguments are forwarded to the project\n");
     fprintf(stderr, "(as setup/render/cleanup's user_data, argv-style).\n");
@@ -230,6 +232,7 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         { "period-count",            'q', OPTPARSE_REQUIRED },
         { "rate",                    'r', OPTPARSE_REQUIRED },
         { "no-capture",              'u', OPTPARSE_NONE     },
+        { "echo-reference",          'a', OPTPARSE_NONE     },
         { "help",                    'h', OPTPARSE_NONE     },
         // playback (lowercase; capture is the same letter upper-cased)
         { "playback-virtual-device", 'd', OPTPARSE_REQUIRED },
@@ -320,6 +323,9 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         }
         case 'u':
             settings->full_duplex = false;
+            break;
+        case 'a':
+            settings->echo_reference = true;
             break;
         case 'h':
             print_usage(argv[0]);
