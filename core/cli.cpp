@@ -13,6 +13,7 @@
 #include "cli.h"
 #include <kvh2xml.h>            // graph key/value macros (STREAMRX, PCM_LL_PLAYBACK, ...)
 #include "audioreach_mappings.h" // get_*_value string->key lookups
+#include "cpu_perf.h"            // CPU_AFFINITY_UNSET
 
 #define OPTPARSE_IMPLEMENTATION
 #include "optparse.h"
@@ -32,6 +33,8 @@ void init_settings(struct settings *settings)
     settings->physical_card = 0;
     settings->full_duplex = true;
     settings->echo_reference = false;
+    settings->cpu_affinity = CPU_AFFINITY_UNSET;
+    settings->force_performance_governor = false;
     settings->user_argv = nullptr;  // populated by parse_cli
 
     // playback stream
@@ -150,6 +153,8 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-r | --rate <rate>                     The audio sample rate (copied to both playback and capture)\n");
     fprintf(stderr, "-u | --no-capture                      Disable full-duplex (playback only)\n");
     fprintf(stderr, "-a | --echo-reference                  Enable the capture<-playback echo reference path (only if capture is active; default off)\n");
+    fprintf(stderr, "-m | --cpu-affinity <cpu index>        Pin the audio thread to this 0-based CPU index (default: unset, no affinity)\n");
+    fprintf(stderr, "-g | --performance-governor             Force every online CPU's scaling governor to 'performance' for the duration of the audio thread (default off)\n");
     fprintf(stderr, "-h | --help                            Print this help and exit\n");
     fprintf(stderr, "\nAny unrecognized options and trailing arguments are forwarded to the project\n");
     fprintf(stderr, "(as setup/render/cleanup's user_data, argv-style).\n");
@@ -233,6 +238,8 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         { "rate",                    'r', OPTPARSE_REQUIRED },
         { "no-capture",              'u', OPTPARSE_NONE     },
         { "echo-reference",          'a', OPTPARSE_NONE     },
+        { "cpu-affinity",            'm', OPTPARSE_REQUIRED },
+        { "performance-governor",    'g', OPTPARSE_NONE     },
         { "help",                    'h', OPTPARSE_NONE     },
         // playback (lowercase; capture is the same letter upper-cased)
         { "playback-virtual-device", 'd', OPTPARSE_REQUIRED },
@@ -326,6 +333,15 @@ int parse_cli(int argc, char **argv, struct settings *settings)
             break;
         case 'a':
             settings->echo_reference = true;
+            break;
+        case 'm':
+            if (sscanf(opts.optarg, "%d", &settings->cpu_affinity) != 1) {
+                fprintf(stderr, "failed parsing cpu affinity index '%s'\n", opts.optarg);
+                return -1;
+            }
+            break;
+        case 'g':
+            settings->force_performance_governor = true;
             break;
         case 'h':
             print_usage(argv[0]);

@@ -17,6 +17,7 @@ configure, build and clean commands in CMakeLists.txt
 // _rename audio_ctx and in all projects + align code style across projects: 
 // __audio_buffer -> audio_out
 // __input_buffer -> audio_in
+// _add option to create audioreach_mappings.h at config time, by passing location of kvh2xml.h of target board
 // _re-introduce per-direction hardware endpoint / MFC configuration (the old
 //  configure_agm_modules, RX-only) for both RX and TX, if needed for clean audio
 
@@ -32,6 +33,7 @@ configure, build and clean commands in CMakeLists.txt
 #include "pcm_utils.h"
 #include "hw_mixer.h"
 #include "agm_mixer.h"
+#include "cpu_perf.h"
 #include "render.h"
 
 // we assume a little-endian CPU: sample conversion copies the host integer's low
@@ -534,20 +536,29 @@ int start_audio(struct settings *settings, struct pcm_ctx ctx[])
     pthread_attr_t attr;
     struct sched_param param;
     struct audio_thread_arg arg = { settings, ctx };
+    int cpu = settings->cpu_affinity;
 
     pthread_attr_init(&attr);
     pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
     param.sched_priority = sched_get_priority_max(SCHED_FIFO);
     pthread_attr_setschedparam(&attr, &param);
     pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
+    set_cpu_affinity_attr(&attr, cpu);  // no-op if cpu == CPU_AFFINITY_UNSET
 
     if (pthread_create(&thread, &attr, audio_thread_func, &arg) != 0) {
         fprintf(stderr, "RT thread failed, falling back to normal priority\n");
-        if (pthread_create(&thread, nullptr, audio_thread_func, &arg) != 0) {
+
+        pthread_attr_t attr_np;
+        pthread_attr_init(&attr_np);
+        set_cpu_affinity_attr(&attr_np, cpu);  // still honor affinity without SCHED_FIFO
+
+        if (pthread_create(&thread, &attr_np, audio_thread_func, &arg) != 0) {
             fprintf(stderr, "failed to create audio thread\n");
+            pthread_attr_destroy(&attr_np);
             pthread_attr_destroy(&attr);
             return -1;
         }
+        pthread_attr_destroy(&attr_np);
     }
     pthread_attr_destroy(&attr);
     pthread_join(thread, nullptr);
@@ -572,6 +583,11 @@ int main(int argc, char **argv)
     if (rc != 0) {
         cleanup_settings(&settings);
         return rc > 0 ? EXIT_SUCCESS : EXIT_FAILURE;  // >0: help shown
+    }
+
+    if (validate_cpu_affinity(settings.cpu_affinity) < 0) {
+        cleanup_settings(&settings);
+        return EXIT_FAILURE;
     }
 
     if (resolve_stream_names(&settings) < 0) {
@@ -624,7 +640,17 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    if (start_audio(&settings, ctx) < 0) {
+    struct governor_snapshot gov_snap = {};  // zero-init: restore is a no-op if never forced
+
+    if (settings.force_performance_governor)
+        force_performance_governor(&gov_snap);
+
+    int rc_audio = start_audio(&settings, ctx);
+
+    if (settings.force_performance_governor)
+        restore_governors(&gov_snap);
+
+    if (rc_audio < 0) {
         cleanup_pcm(ctx);
         cleanup_agm_mixer();
         cleanup_hw_mixer();

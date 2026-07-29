@@ -37,11 +37,13 @@ ar-audioengine/
 │   ├── agm_mixer.cpp       # AudioReach graph and mixer control setup
 │   ├── hw_mixer.cpp        # Hardware mixer path configuration
 │   ├── pcm_utils.cpp       # PCM format utilities
+│   ├── cpu_perf.cpp        # CPU affinity and performance-governor control
 │   └── default_render.cpp  # Default sine wave renderer
 ├── include/                # Header files
 │   ├── agm_mixer.h
 │   ├── hw_mixer.h
 │   ├── pcm_utils.h
+│   ├── cpu_perf.h
 │   ├── render.h            # The render API your project implements
 │   ├── audioreach_mappings.h
 │   └── optparse.h
@@ -149,7 +151,15 @@ long options).
 | `-r`, `--rate` | Sample rate (both streams) | `48000` |
 | `-u`, `--no-capture` | Disable capture (playback only) | full duplex on |
 | `-a`, `--echo-reference` | Enable the capture←playback echo reference path (only applied when capture is active) | `off` |
+| `-m`, `--cpu-affinity` | Pin the audio thread to this 0-based CPU index | unset (no affinity) |
+| `-g`, `--performance-governor` | Force every online CPU's scaling governor to `performance` for the run, restored on exit | `off` |
 | `-h`, `--help` | Print help and exit | |
+
+`--performance-governor` needs write access to
+`/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor` (root, or matching
+udev/permission setup) to actually take effect. If a CPU's governor isn't
+writable (or has no cpufreq driver), it's skipped with a warning — the flag
+never fails the run, it just silently has no effect on that CPU.
 
 #### Playback
 

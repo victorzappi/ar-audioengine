@@ -68,6 +68,7 @@ set(CORE_SRCS
     core/pcm_utils.cpp
     core/hw_mixer.cpp
     core/agm_mixer.cpp
+    core/cpu_perf.cpp
 )
 
 # pass project path as either relative to source dir or absolute

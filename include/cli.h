@@ -42,6 +42,9 @@ struct settings {
     bool full_duplex;              // defaults on; -u/--no-capture disables capture
     bool echo_reference;           // defaults off; -a/--echo-reference enables the
                                    // capture<-playback echo reference (only if capture is active)
+    int cpu_affinity;              // CLI -m; unset (no affinity) by default -- see
+                                   // CPU_AFFINITY_UNSET in cpu_perf.h
+    bool force_performance_governor; // CLI -g; defaults off
 
     struct pcm_stream playback;    // PCM_OUT
     struct pcm_stream capture;     // PCM_IN
