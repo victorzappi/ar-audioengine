@@ -2,6 +2,12 @@
 
 add_library(libraries INTERFACE)
 
+# Fir has no external dependency, so unlike the libraries below it's always
+# built and available to any project (no ADD_* detection needed)
+add_library(Fir STATIC Fir/Fir.cpp)
+target_include_directories(Fir PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Fir)
+target_link_libraries(libraries INTERFACE Fir)
+
 if(ADD_LIBSNDFILE)
     add_library(AudioFile STATIC AudioFile/AudioFileUtilities.cpp)
     target_link_libraries(AudioFile PRIVATE dependencies)
