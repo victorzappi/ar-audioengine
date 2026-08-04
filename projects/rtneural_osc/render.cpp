@@ -3,6 +3,10 @@
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
+// rtneural_osc: feeds a running phase, once per sample, into an RTNeural
+// model that approximates a sinusoidal oscillator, and writes the result to
+// every channel.
+
 #include <RTNeural/RTNeural.h>
 #include <string>
 #include <math.h>
@@ -11,8 +15,9 @@
 float frequency = 440;
 float amplitude = 0.5;
 
-// by default, the model file must be in the same location from where the executable is launched
-std::string modelFilePath = "./1i-512-relu_p=0.5_r=0.5.json";
+// by default, the model file must be in the current working directory you
+// launch the engine from (not necessarily the executable's own directory)
+std::string modelFilePath = "1i-512-relu_p=0.5_r=0.5.json";
 
 float phase;
 float inverseSampleRate;

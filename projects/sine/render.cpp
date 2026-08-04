@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
+// sine: generates a continuous sine tone and writes it to every channel.
 
 #include <math.h>
 #include "render.h"

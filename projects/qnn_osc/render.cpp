@@ -3,6 +3,18 @@
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
+// qnn_osc: batches a running amplitude/phase pair over a whole period into a
+// QNN model that approximates a sinusoidal oscillator, and writes the
+// result to every channel.
+//
+// Unlike the other examples, the model isn't loaded from a fixed path in
+// the source -- it's passed at runtime via --qnn-model (plus --qnn-backend
+// and --qnn-system), so it must be present on the target device when you
+// run it. Two variants are bundled here, full_oscillator_256x2.dlc and
+// full_oscillator_512x2.dlc, each with a fixed batch size (256 or 512)
+// baked in at export time; pick the one whose batch size matches the
+// engine's --period-size.
+
 #include <iostream>
 #include <memory>
 #include <string>

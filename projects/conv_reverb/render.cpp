@@ -3,11 +3,13 @@
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
-// Convolution reverb: loops a mono/stereo source file through a fixed-IR FIR
-// filter (reverb_ir_f32.h) and writes the result to the output buffer.
+// Convolution reverb: loops a mono/stereo input audio file through a
+// fixed-IR FIR filter (reverb_ir_f32.h) and writes the result to the output
+// buffer.
 //
-// The source file is not bundled next to the executable -- copy it there
-// (see kInputFile below) before running.
+// The input audio file is not bundled with the source -- copy it into the
+// current working directory you launch the engine from (not necessarily
+// the executable's own directory -- see kInputFile below) before running.
 
 #include "render.h"
 #include "reverb_ir_f32.h"
@@ -17,14 +19,14 @@
 #include <vector>
 #include <cstdio>
 
-static const char *kInputFile = "test_dry.wav";
+static const char *kInputFile = "dry_percussions.wav";
 static const float kInputGain = 0.35f;  // the IR's coefficients sum to ~82 in
                                          // absolute value, so full-scale input clips
 
 static Fir fir;
 
-// one entry per output channel; channels beyond the source file's own stay
-// empty (rendered as silence)
+// one entry per output channel; channels beyond the input audio file's own
+// stay empty (rendered as silence)
 static std::vector<std::vector<float>> fileData;
 static unsigned int fileFrames = 0;
 static unsigned int usedChannels = 0;
@@ -45,7 +47,7 @@ int setup(struct audio_ctx *ctx, void *user_data)
 
     std::vector<std::vector<float>> loaded = AudioFileUtilities::load(kInputFile);
     if (loaded.empty() || loaded[0].empty()) {
-        fprintf(stderr, "conv_reverb: failed to load audio file '%s' (expected next to the executable)\n", kInputFile);
+        fprintf(stderr, "conv_reverb: failed to load audio file '%s' (expected in the current working directory)\n", kInputFile);
         return -1;
     }
 

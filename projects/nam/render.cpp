@@ -29,7 +29,8 @@
 #include <string>
 
 
-// by default, all files must be in the same location from where the executable is launched
+// by default, all files must be in the current working directory you launch
+// the engine from (not necessarily the executable's own directory)
 
 // Audio file to process
 std::string audiofilePath = "./715794__guitarman213__clean-electric-guitar_mono_norm_48k.wav";

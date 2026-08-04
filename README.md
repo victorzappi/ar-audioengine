@@ -61,6 +61,18 @@ ar-audioengine/
 
 ar-audioengine uses CMake. Build directly on the target board or cross-compile with the appropriate Qualcomm toolchain.
 
+Some projects pull in dependencies tracked as git submodules (e.g. libsndfile, RTNeural). Clone the repo with submodules included:
+
+```bash
+git clone --recurse-submodules https://github.com/victorzappi/ar-audioengine.git
+```
+
+If you already cloned without that flag, fetch them into the existing checkout instead:
+
+```bash
+git submodule update --init --recursive
+```
+
 ### Default project (built-in sine wave)
 
 ```bash

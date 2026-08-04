@@ -155,11 +155,14 @@ target_compile_options(ar_audioengine PRIVATE -Wall -fdiagnostics-color=always)
 add_compile_options(-ffunction-sections -fdata-sections)
 add_link_options(-Wl,--gc-sections)
 
-
+# When core architecture is known, it can be specified with '-mcpu'
+# e.g., -mcpu=cortex-a78
+# When the CPU has different cores but from the same family, target the fastest one
+# e.g., RB3 Gen 2's QCS6490/Kodiak combines cortex-a78 and cortex-a55, both ARMv8.2-A -> -mcpu=cortex-a78
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(ar_audioengine PRIVATE -O0 -g)
 else()
-    target_compile_options(ar_audioengine PRIVATE -O2)
+    target_compile_options(ar_audioengine PRIVATE -O3)
 endif()
 #-------------------------------------------------------------------------
 
