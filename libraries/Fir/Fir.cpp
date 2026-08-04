@@ -6,27 +6,31 @@
 #include "Fir.h"
 
 #include <algorithm>
+#include <cstring>
 
-Fir::Fir(unsigned int numTaps, unsigned int numChannels)
+Fir::Fir(unsigned int numTaps, unsigned int numChannels, unsigned int maxFrames)
 {
-	setup(numTaps, numChannels);
+	setup(numTaps, numChannels, maxFrames);
 }
 
-int Fir::setup(unsigned int numTaps, unsigned int numChannels)
+int Fir::setup(unsigned int numTaps, unsigned int numChannels,
+               unsigned int maxFrames)
 {
-	if(numTaps == 0 || numChannels == 0)
+	if(numTaps == 0 || numChannels == 0 || maxFrames == 0)
 		return -1;
 
 	numTaps_ = numTaps;
 	numChannels_ = numChannels;
-	pos_ = 0;
+	maxFrames_ = maxFrames;
+
+	const size_t stride = (size_t)(numTaps_ - 1) + maxFrames_;
 
 	coeffs_.assign(numTaps_, 0.0f);
-	history_.assign((size_t)numChannels_ * 2 * numTaps_, 0.0f);
+	history_.assign((size_t)numChannels_ * stride, 0.0f);
 
 	hist_.resize(numChannels_);
 	for(unsigned int c = 0; c < numChannels_; ++c)
-		hist_[c] = history_.data() + (size_t)c * 2 * numTaps_;
+		hist_[c] = history_.data() + (size_t)c * stride;
 
 	return 0;
 }
@@ -36,8 +40,8 @@ int Fir::setCoefficients(const float *h, unsigned int n)
 	if(h == nullptr || n != numTaps_)
 		return -1;
 
-	// y[n] = sum_k h[k] * x[n-k]. Storing h reversed lets the inner loop walk
-	// the history window forwards instead of backwards.
+	// y[n] = sum_k h[k] * x[n-k]. Reversing h turns that into a forward dot
+	// product against the history window.
 	for(unsigned int k = 0; k < numTaps_; ++k)
 		coeffs_[k] = h[numTaps_ - 1 - k];
 
@@ -47,7 +51,6 @@ int Fir::setCoefficients(const float *h, unsigned int n)
 void Fir::reset()
 {
 	std::fill(history_.begin(), history_.end(), 0.0f);
-	pos_ = 0;
 }
 
 void Fir::process(float *const *in, unsigned int frames)
@@ -56,80 +59,56 @@ void Fir::process(float *const *in, unsigned int frames)
 	const unsigned int nch = numChannels_;
 	const float *const hrev = coeffs_.data();
 
-	if(N == 0 || nch == 0)
+	if(N == 0 || nch == 0 || frames == 0 || frames > maxFrames_)
 		return;
 
-	if(nch == 2)
-	{
-		// Fused stereo path: taps in the outer loop, channels unrolled inside,
-		// so each coefficient is loaded once and feeds both accumulators.
-		float *x0 = in[0];
-		float *x1 = in[1];
-		float *h0 = hist_[0];
-		float *h1 = hist_[1];
-		unsigned int p = pos_;
-
-		for(unsigned int n = 0; n < frames; ++n)
-		{
-			const float s0 = x0[n];
-			const float s1 = x1[n];
-			h0[p] = s0;
-			h0[p + N] = s0;
-			h1[p] = s1;
-			h1[p + N] = s1;
-
-			const float *w0 = h0 + p + 1;
-			const float *w1 = h1 + p + 1;
-
-			float a0 = 0.0f;
-			float a1 = 0.0f;
-			for(unsigned int k = 0; k < N; ++k)
-			{
-				const float c = hrev[k];
-				a0 += c * w0[k];
-				a1 += c * w1[k];
-			}
-
-			x0[n] = a0;
-			x1[n] = a1;
-
-			if(++p == N)
-				p = 0;
-		}
-
-		pos_ = p;
-		return;
-	}
-
-	// Generic path (mono, or more than two channels). Channel-outer, so the
-	// coefficients are re-read once per channel.
-	const unsigned int startPos = pos_;
-	unsigned int p = startPos;
+	const unsigned int tail = N - 1;
 
 	for(unsigned int c = 0; c < nch; ++c)
 	{
 		float *x = in[c];
-		float *hc = hist_[c];
-		p = startPos;
+		float *h = hist_[c];
 
-		for(unsigned int n = 0; n < frames; ++n)
+		// Append the incoming block after the retained tail.
+		memcpy(h + tail, x, (size_t)frames * sizeof(float));
+
+		unsigned int nb = 0;
+
+		// Hot path: fixed-size output blocks, accumulators live in registers
+		// across the whole tap loop.
+		for(; nb + kOutBlock <= frames; nb += kOutBlock)
 		{
-			const float s = x[n];
-			hc[p] = s;
-			hc[p + N] = s;
+			float acc[kOutBlock];
+			for(unsigned int m = 0; m < kOutBlock; ++m)
+				acc[m] = 0.0f;
 
-			const float *w = hc + p + 1;
+			const float *base = h + nb;
+
+			for(unsigned int j = 0; j < N; ++j)
+			{
+				const float cf = hrev[j];
+				const float *w = base + j;
+
+				for(unsigned int m = 0; m < kOutBlock; ++m)
+					acc[m] += cf * w[m];
+			}
+
+			memcpy(x + nb, acc, kOutBlock * sizeof(float));
+		}
+
+		// Remainder, when frames is not a multiple of kOutBlock.
+		for(; nb < frames; ++nb)
+		{
+			const float *w = h + nb;
 
 			float a = 0.0f;
-			for(unsigned int k = 0; k < N; ++k)
-				a += hrev[k] * w[k];
+			for(unsigned int j = 0; j < N; ++j)
+				a += hrev[j] * w[j];
 
-			x[n] = a;
-
-			if(++p == N)
-				p = 0;
+			x[nb] = a;
 		}
-	}
 
-	pos_ = p;
+		// Retain the trailing numTaps-1 samples for the next block.
+		memmove(h, h + frames, (size_t)tail * sizeof(float));
+	}
 }

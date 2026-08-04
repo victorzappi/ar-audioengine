@@ -63,7 +63,7 @@ int setup(struct audio_ctx *ctx, void *user_data)
     for (unsigned int c = 0; c < ctx->channels; c++)
         scratchPtrs[c] = scratch[c].data();
 
-    if (fir.setup(REVERB_IR_NUM_TAPS, ctx->channels) != 0) {
+    if (fir.setup(REVERB_IR_NUM_TAPS, ctx->channels, ctx->period_size) != 0) {
         fprintf(stderr, "conv_reverb: Fir::setup failed\n");
         return -1;
     }
