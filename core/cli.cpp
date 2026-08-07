@@ -113,7 +113,7 @@ void init_settings(struct settings *settings)
     capture->instance_kv.value = INSTANCE_1;
 
     capture->devicepp_kv.key   = DEVICEPP_TX;
-    capture->devicepp_kv.value = 0;
+    capture->devicepp_kv.value = DEVICEPP_TX_AUDIO_FLUENCE_SMECNS;
 
     capture->device_kv.key     = DEVICETX;
     capture->device_kv.value   = SPEAKER_MIC;
