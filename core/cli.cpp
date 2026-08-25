@@ -41,7 +41,7 @@ void init_settings(struct settings *settings)
     struct pcm_stream *playback = &settings->playback;
 
     playback->virtual_device = 100;
-    playback->physical_device = 0;
+    playback->physical_device = 2;
     playback->frontend_name = nullptr;
     playback->backend_name = nullptr;
     playback->mixer_path = strdup(DEFAULT_PLAYBACK_MIXER_PATH);
@@ -82,7 +82,7 @@ void init_settings(struct settings *settings)
     struct pcm_stream *capture = &settings->capture;
 
     capture->virtual_device = 101;
-    capture->physical_device = 1;
+    capture->physical_device = 3;
     capture->frontend_name = nullptr;
     capture->backend_name = nullptr;
     capture->mixer_path = strdup(DEFAULT_CAPTURE_MIXER_PATH);
