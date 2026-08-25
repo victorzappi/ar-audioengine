@@ -166,6 +166,7 @@ long options).
 | `-m`, `--cpu-affinity` | Pin the audio thread to this 0-based CPU index | unset (no affinity) |
 | `-g`, `--performance-governor` | Force every online CPU's scaling governor to `performance` for the run, restored on exit | `off` |
 | `-h`, `--help` | Print help and exit | |
+| `--verbose` | Print engine diagnostics (device/graph setup, mixer ctls, CPU pinning...) | `off` |
 
 `--performance-governor` needs write access to
 `/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor` (root, or matching
@@ -173,12 +174,17 @@ udev/permission setup) to actually take effect. If a CPU's governor isn't
 writable (or has no cpufreq driver), it's skipped with a warning — the flag
 never fails the run, it just silently has no effect on that CPU.
 
+By default the engine only prints the startup banner and a message on
+successful exit; errors and warnings always print regardless. Pass
+`--verbose` to also see per-stream diagnostics (frontend/backend resolution,
+PCM config, mixer ctl and graph setup, CPU pinning/governor changes).
+
 #### Playback
 
 | Option | Description | Default |
 |---|---|---|
 | `-d`, `--playback-virtual-device` | Virtual device number | `100` |
-| `-e`, `--playback-physical-device` | Physical device number | `0` |
+| `-e`, `--playback-physical-device` | Physical device number | `2` |
 | `-t`, `--playback-frontend-name` | Frontend device name | auto |
 | `-k`, `--playback-backend-name` | Backend device name | auto |
 | `-n`, `--playback-channels` | Number of channels | `2` |
@@ -197,7 +203,7 @@ never fails the run, it just silently has no effect on that CPU.
 | Option | Description | Default |
 |---|---|---|
 | `-D`, `--capture-virtual-device` | Virtual device number | `101` |
-| `-E`, `--capture-physical-device` | Physical device number | `1` |
+| `-E`, `--capture-physical-device` | Physical device number | `3` |
 | `-T`, `--capture-frontend-name` | Frontend device name | auto |
 | `-K`, `--capture-backend-name` | Backend device name | auto |
 | `-N`, `--capture-channels` | Number of channels | `2` |
@@ -206,7 +212,7 @@ never fails the run, it just silently has no effect on that CPU.
 | `-O`, `--capture-path` | Hardware mixer capture path | `speaker-mic` |
 | `-W`, `--streamtx` | Stream graph key value | `PCM_RECORD` |
 | `-X`, `--streampp-tx` | Stream PP graph key value | `0` |
-| `-Y`, `--devicepp-tx` | Device PP graph key value | `0` |
+| `-Y`, `--devicepp-tx` | Device PP graph key value | `DEVICEPP_TX_AUDIO_FLUENCE_SMECNS` |
 | `-Z`, `--devicetx` | Device graph key value | `SPEAKER_MIC` |
 | `-I`, `--instancetx` | Instance graph key value | `INSTANCE_1` |
 | `--capture-period-size` / `-count` / `--capture-rate` | Per-stream overrides of the shared values | shared |
