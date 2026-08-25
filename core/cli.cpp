@@ -74,7 +74,7 @@ void init_settings(struct settings *settings)
     playback->instance_kv.value = INSTANCE_1;
 
     playback->devicepp_kv.key   = DEVICEPP_RX;
-    playback->devicepp_kv.value = DEVICEPP_RX_AUDIO_MBDRC;
+    playback->devicepp_kv.value = 0; //DEVICEPP_RX_AUDIO_MBDRC;
 
     playback->device_kv.key     = DEVICERX;
     playback->device_kv.value   = SPEAKER;
