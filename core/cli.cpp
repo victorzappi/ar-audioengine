@@ -35,6 +35,7 @@ void init_settings(struct settings *settings)
     settings->echo_reference = false;
     settings->cpu_affinity = CPU_AFFINITY_UNSET;
     settings->force_performance_governor = false;
+    settings->verbose = false;
     settings->user_argv = nullptr;  // populated by parse_cli
 
     // playback stream
@@ -156,6 +157,7 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-m | --cpu-affinity <cpu index>        Pin the audio thread to this 0-based CPU index (default: unset, no affinity)\n");
     fprintf(stderr, "-g | --performance-governor             Force every online CPU's scaling governor to 'performance' for the duration of the audio thread (default off)\n");
     fprintf(stderr, "-h | --help                            Print this help and exit\n");
+    fprintf(stderr, "     --verbose                          Print engine diagnostics (device/graph setup, mixer ctls, CPU pinning...); default off, only the startup banner is printed\n");
     fprintf(stderr, "\nAny unrecognized options and trailing arguments are forwarded to the project\n");
     fprintf(stderr, "(as setup/render/cleanup's user_data, argv-style).\n");
 
@@ -226,6 +228,7 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         OPT_CAP_PERIOD_SIZE,
         OPT_CAP_PERIOD_COUNT,
         OPT_CAP_RATE,
+        OPT_VERBOSE,
     };
 
     struct optparse opts;
@@ -278,6 +281,7 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         { "capture-period-size",     OPT_CAP_PERIOD_SIZE,  OPTPARSE_REQUIRED },
         { "capture-period-count",    OPT_CAP_PERIOD_COUNT, OPTPARSE_REQUIRED },
         { "capture-rate",            OPT_CAP_RATE,         OPTPARSE_REQUIRED },
+        { "verbose",                 OPT_VERBOSE,          OPTPARSE_NONE     },
         { 0, 0, OPTPARSE_NONE }
     };
 
@@ -346,6 +350,9 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         case 'h':
             print_usage(argv[0]);
             return 1;
+        case OPT_VERBOSE:
+            settings->verbose = true;
+            break;
 
         // ----- playback -----
         case 'd':
@@ -604,7 +611,7 @@ int parse_cli(int argc, char **argv, struct settings *settings)
 
     // report what is being handed off (slot 0 is the program name, so > 1 means
     // there is at least one forwarded token)
-    if (n_unrecognized > 1) {
+    if (settings->verbose && n_unrecognized > 1) {
         printf("Arguments not recognized by main, forwarded to the project: ");
         for (int i = 1; i < n_unrecognized; i++)
             printf("%s%s", unrecognized[i], (i < n_unrecognized - 1) ? ", " : "\n");

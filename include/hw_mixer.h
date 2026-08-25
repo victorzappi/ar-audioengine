@@ -7,6 +7,10 @@
 #ifndef HW_MIXER_H
 #define HW_MIXER_H
 
+// gate this module's informational printf() output; error/warning fprintf(stderr, ...)
+// output is always printed regardless. call once, before any other hw_mixer function.
+void set_hw_mixer_verbose(bool verbose);
+
 int init_hw_mixer(const char *mixer_path_xml, unsigned int card);
 int set_hw_mixer_path(const char *path_name);
 void cleanup_hw_mixer(void);

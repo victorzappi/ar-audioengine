@@ -38,6 +38,10 @@
 #include <agm/agm_api.h> // for struct agm_key_value
 
 
+// gate this module's informational printf() output; error/warning fprintf(stderr, ...)
+// output is always printed regardless. call once, before any other agm_mixer function.
+void set_agm_mixer_verbose(bool verbose);
+
 // open the mixer on the virtual card (shared by both directions)
 int init_agm_mixer(unsigned int virtual_card);
 

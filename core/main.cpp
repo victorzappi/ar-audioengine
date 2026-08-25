@@ -61,6 +61,11 @@ struct pcm_ctx {
 
 std::atomic_int should_stop(0);
 
+// gates this file's informational printf() output (set once in main(), right after
+// CLI parsing); error/warning fprintf(stderr, ...) output always prints regardless.
+// file-scope so sig_handler (fixed OS callback signature) can read it too.
+static bool g_verbose = false;
+
 // hot-path sample conversion: defined at the very bottom of the file, forward
 // declared here because the audio loop (above) calls them
 void fromFloatToRaw_int(struct pcm_ctx *ctx);
@@ -174,9 +179,10 @@ static int resolve_stream_names_dir(const char *cards_xml_path, unsigned int vir
             return -1;
         }
     }
-    printf("virtual card: %u, device: %u -> frontend: %s%s\n",
-            virtual_card, stream->virtual_device,
-            stream->frontend_name, auto_retrieve ? " (auto-retrieved)" : "");
+    if (g_verbose)
+        printf("virtual card: %u, device: %u -> frontend: %s%s\n",
+                virtual_card, stream->virtual_device,
+                stream->frontend_name, auto_retrieve ? " (auto-retrieved)" : "");
 
     auto_retrieve = (stream->backend_name == nullptr);
     if (auto_retrieve) {
@@ -187,9 +193,10 @@ static int resolve_stream_names_dir(const char *cards_xml_path, unsigned int vir
             return -2;
         }
     }
-    printf("physical card: %u, device: %u -> backend: %s%s\n\n",
-            physical_card, stream->physical_device,
-            stream->backend_name, auto_retrieve ? " (auto-retrieved)" : "");
+    if (g_verbose)
+        printf("physical card: %u, device: %u -> backend: %s%s\n\n",
+                physical_card, stream->physical_device,
+                stream->backend_name, auto_retrieve ? " (auto-retrieved)" : "");
     return 0;
 }
 
@@ -305,13 +312,15 @@ static int init_pcm_dir(struct pcm_ctx* ctx, struct settings *settings, struct p
         return -1;
     }
 
-    printf("\nPCM (frontend) config:\n");
-    printf("  direction   %s\n",          (stream->flags & PCM_IN) ? "capture" : "playback");
-    printf("  rate        %u Hz\n",       stream->config.rate);
-    printf("  channels    %u\n",          stream->config.channels);
-    printf("  format      %u-bit %s\n",   stream->bits, stream->is_float ? "float" : "signed int");
-    printf("  period size %u frames\n",   stream->config.period_size);
-    printf("  periods     %u\n\n",        stream->config.period_count);
+    if (g_verbose) {
+        printf("\nPCM (frontend) config:\n");
+        printf("  direction   %s\n",          (stream->flags & PCM_IN) ? "capture" : "playback");
+        printf("  rate        %u Hz\n",       stream->config.rate);
+        printf("  channels    %u\n",          stream->config.channels);
+        printf("  format      %u-bit %s\n",   stream->bits, stream->is_float ? "float" : "signed int");
+        printf("  period size %u frames\n",   stream->config.period_size);
+        printf("  periods     %u\n\n",        stream->config.period_count);
+    }
 
     return 0;
 }
@@ -331,7 +340,8 @@ static int init_pcm(struct settings *settings, struct pcm_ctx ctx[])
 // close both pcms (safe on a zero-initialized / partially-opened array)
 void cleanup_pcm(struct pcm_ctx ctx[])
 {
-    printf("pcm_cleanup\n");
+    if (g_verbose)
+        printf("pcm_cleanup\n");
     for (int d = 0; d < NUM_DIRS; d++) {
         if (ctx[d].pcm != nullptr) {
             pcm_close(ctx[d].pcm);
@@ -389,7 +399,8 @@ void sig_handler(int sig)
 {
     /* allow the stream to be closed gracefully */
     signal(sig, SIG_IGN);
-    printf("\nStopping PCM stream...\n");
+    if (g_verbose)
+        printf("\nStopping PCM stream...\n");
     stream_close();
 
 }
@@ -461,9 +472,11 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     }
 
     if (cap && settings->echo_reference) {
-        printf("Enabling echo reference path from playback to capture\n");
+        if (g_verbose)
+            printf("Enabling echo reference path from playback to capture\n");
         if (set_agm_ecref_path(settings->capture.frontend_name, settings->playback.backend_name, true)) {
-            printf("Could not enable echo reference path\n");
+            if (g_verbose)
+                printf("Could not enable echo reference path\n");
         }
     }
 
@@ -585,6 +598,12 @@ int main(int argc, char **argv)
         return rc > 0 ? EXIT_SUCCESS : EXIT_FAILURE;  // >0: help shown
     }
 
+    // propagate --verbose to every module that prints
+    g_verbose = settings.verbose;
+    set_hw_mixer_verbose(settings.verbose);
+    set_agm_mixer_verbose(settings.verbose);
+    set_cpu_perf_verbose(settings.verbose);
+
     if (validate_cpu_affinity(settings.cpu_affinity) < 0) {
         cleanup_settings(&settings);
         return EXIT_FAILURE;
@@ -664,6 +683,8 @@ int main(int argc, char **argv)
     cleanup_hw_mixer();
     cleanup_ctx(ctx);
     cleanup_settings(&settings);
+
+    printf("AudioReach Audioengine | project: %s exited successfully\n\n", PROJECT_NAME);
 
     return EXIT_SUCCESS;
 }

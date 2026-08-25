@@ -45,6 +45,8 @@ struct settings {
     int cpu_affinity;              // CLI -m; unset (no affinity) by default -- see
                                    // CPU_AFFINITY_UNSET in cpu_perf.h
     bool force_performance_governor; // CLI -g; defaults off
+    bool verbose;                  // CLI --verbose; defaults off (engine prints only
+                                    // the startup banner; pass --verbose for full diagnostics)
 
     struct pcm_stream playback;    // PCM_OUT
     struct pcm_stream capture;     // PCM_IN

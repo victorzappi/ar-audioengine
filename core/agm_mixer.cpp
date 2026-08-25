@@ -90,6 +90,13 @@ static struct mixer *g_mixer = NULL;
 static struct agm_endpoints g_endpoints[AGM_MAX_ENDPOINTS];
 static int g_num_endpoints = 0;
 
+static bool g_verbose = false;
+
+void set_agm_mixer_verbose(bool verbose)
+{
+    g_verbose = verbose;
+}
+
 
 enum {
     DEVICE = 1,
@@ -186,10 +193,13 @@ struct gsl_tag_module_info {
 
 
 // Helper function to print metadata debug info
-static void print_metadata_info(const char *mixer_str, 
+static void print_metadata_info(const char *mixer_str,
                                 struct agm_key_value *graph_kv, unsigned int num_graph_kv,
                                 struct agm_key_value *calibraiton_kv, unsigned int num_ckv)
 {
+    if (!g_verbose)
+        return;
+
     printf("---\tmixer ctl: %s", mixer_str);
     
     // Print graph_kv values
@@ -224,16 +234,17 @@ static int get_mixer_ctl_array(const char *mixer_str,
 
     ctl = mixer_get_ctl_by_name(g_mixer, mixer_str);
     if (!ctl) {
-        printf("Could not find mixer ctl: %s\n", mixer_str);
+        if (g_verbose)
+            printf("Could not find mixer ctl: %s\n", mixer_str);
         return -ENODEV;
     }
-    
+
     ret = mixer_ctl_get_array(ctl, payload, payload_size);
-    if (ret < 0) {
-        printf("Could not get mixer ctl array: %s, error %d (%s)\n", mixer_str, errno, 
+    if (ret < 0 && g_verbose) {
+        printf("Could not get mixer ctl array: %s, error %d (%s)\n", mixer_str, errno,
                 strerror(errno < 0 ? -errno : errno));
     }
-    
+
     return ret;
 }
 
@@ -248,15 +259,17 @@ int get_mixer_ctl_string(const char *mixer_str,
 
     ctl = mixer_get_ctl_by_name(g_mixer, mixer_str);
     if (!ctl) {
-        printf("Could not find mixer ctl: %s\n", mixer_str);
+        if (g_verbose)
+            printf("Could not find mixer ctl: %s\n", mixer_str);
         return -ENODEV;
     }
 
     value = mixer_ctl_get_value(ctl, 0);
     enum_str = mixer_ctl_get_enum_string(ctl, value);
     if (!enum_str) {
-        printf("Could not get mixer ctl string: %s, error %d (%s)\n", mixer_str, errno, 
-                strerror(errno < 0 ? -errno : errno));
+        if (g_verbose)
+            printf("Could not get mixer ctl string: %s, error %d (%s)\n", mixer_str, errno,
+                    strerror(errno < 0 ? -errno : errno));
         return -EINVAL;
     }
 
@@ -275,16 +288,17 @@ static int set_mixer_ctl_array(const char *mixer_str,
 
     ctl = mixer_get_ctl_by_name(g_mixer, mixer_str);
     if (!ctl) {
-        printf("Could not find mixer ctl: %s\n", mixer_str);
+        if (g_verbose)
+            printf("Could not find mixer ctl: %s\n", mixer_str);
         return -ENODEV;
     }
-    
+
     ret = mixer_ctl_set_array(ctl, payload, payload_size);
-    if (ret < 0) {
-        printf("Could not set mixer ctl array: %s, error %d (%s)\n", mixer_str, errno, 
+    if (ret < 0 && g_verbose) {
+        printf("Could not set mixer ctl array: %s, error %d (%s)\n", mixer_str, errno,
                 strerror(errno < 0 ? -errno : errno));
     }
-    
+
     return ret;
 }
 
@@ -297,16 +311,17 @@ int set_mixer_ctl_string(const char *mixer_str,
 
     ctl = mixer_get_ctl_by_name(g_mixer, mixer_str);
     if (!ctl) {
-        printf("Could not find mixer ctl: %s\n", mixer_str);
+        if (g_verbose)
+            printf("Could not find mixer ctl: %s\n", mixer_str);
         return -ENODEV;
     }
-    
-    ret = mixer_ctl_set_enum_by_string(ctl, (const char *)payload); 
-    if (ret < 0) {
-        printf("Could not set mixer ctl string: %s %s, error %d (%s)\n", mixer_str, payload, errno, 
+
+    ret = mixer_ctl_set_enum_by_string(ctl, (const char *)payload);
+    if (ret < 0 && g_verbose) {
+        printf("Could not set mixer ctl string: %s %s, error %d (%s)\n", mixer_str, payload, errno,
                 strerror(errno < 0 ? -errno : errno));
     }
-    
+
     return ret;
 }
 
@@ -372,7 +387,8 @@ static char* build_mixer_control_string(const char *device_name, const char *con
     int ctl_len = strlen(device_name) + 1 + strlen(control) + 1;
     char *mixer_str = (char *)calloc(1, ctl_len);
     if (!mixer_str) {
-        printf("mixer_str calloc failed\n");
+        if (g_verbose)
+            printf("mixer_str calloc failed\n");
         return NULL;
     }
     snprintf(mixer_str, ctl_len, "%s %s", device_name, control);
@@ -383,7 +399,8 @@ int set_agm_device_metadata(char* backend_name,
                             struct agm_key_value device_kv,
                             struct agm_key_value *calibraiton_kv, unsigned int num_ckv)
 {
-    printf("---set_agm_device_metadata\n");
+    if (g_verbose)
+        printf("---set_agm_device_metadata\n");
 
     char *control = (char *)"metadata";
     char *mixer_str;
@@ -422,7 +439,8 @@ int set_agm_device_metadata(char* backend_name,
 
 int set_agm_stream_metadata_type(char* frontend_name, char *metadata_type)
 {
-    printf("\t---set_agm_stream_metadata_type\n");
+    if (g_verbose)
+        printf("\t---set_agm_stream_metadata_type\n");
     
     char *control = (char *)"control";
     char *mixer_str;
@@ -438,7 +456,7 @@ int set_agm_stream_metadata_type(char* frontend_name, char *metadata_type)
     ret = set_mixer_ctl_string(mixer_str, metadata_type);
 
     // Print success message with the mixer control and the enum/string
-    if (ret == 0) {
+    if (ret == 0 && g_verbose) {
         printf("---\t\tmixer ctl: %s %s\n", mixer_str, metadata_type);
     }
 
@@ -450,7 +468,8 @@ int set_agm_stream_metadata(char* frontend_name,
                             struct agm_key_value *stream_kv, unsigned int num_skv,
                             struct agm_key_value *calibraiton_kv, unsigned int num_ckv)
 {
-    printf("---set_agm_stream_metadata\n");
+    if (g_verbose)
+        printf("---set_agm_stream_metadata\n");
 
     char *control = (char *)"metadata";
     char *mixer_str;
@@ -496,7 +515,8 @@ int set_agm_streamdevice_metadata(char* frontend_name, char* backend_name,
                                   struct agm_key_value *streamdevice_kv, unsigned int num_sdkv,
                                   struct agm_key_value *calibraiton_kv, unsigned int num_ckv)
 {
-    printf("---set_agm_streamdevice_metadata\n");
+    if (g_verbose)
+        printf("---set_agm_streamdevice_metadata\n");
 
     char *control = (char *)"metadata";
     char *mixer_str;
@@ -541,7 +561,8 @@ int set_agm_streamdevice_metadata(char* frontend_name, char* backend_name,
 
 int set_agm_graph(char* frontend_name, struct agm_key_value *graph_kv, unsigned int num_graph_kv)
 {
-    printf("---set_agm_graph\n");
+    if (g_verbose)
+        printf("---set_agm_graph\n");
 
     struct agm_key_value *calibraiton_kv = NULL;
     unsigned int num_ckv = 0;
@@ -552,8 +573,9 @@ int set_agm_graph(char* frontend_name, struct agm_key_value *graph_kv, unsigned 
 
 int connect_agm_frontend_to_backend(char* frontend_name, char* backend_name, bool connect)
 {
-    printf("---connect_agm_frontend_to_backend\n");
-    
+    if (g_verbose)
+        printf("---connect_agm_frontend_to_backend\n");
+
     char *control;
     char *mixer_str;
     int ret = 0;
@@ -573,7 +595,7 @@ int connect_agm_frontend_to_backend(char* frontend_name, char* backend_name, boo
     ret = set_mixer_ctl_string(mixer_str, backend_name);
 
     // Print success message with the mixer control and the enum/string
-    if (ret == 0) {
+    if (ret == 0 && g_verbose) {
         printf("---\t\tmixer ctl: %s %s\n", mixer_str, backend_name);
     }
 
@@ -583,7 +605,8 @@ int connect_agm_frontend_to_backend(char* frontend_name, char* backend_name, boo
 
 int set_agm_ecref_path(char* cp_frontend_name, char* pb_backend_name, bool enable)
 {
-    printf("---set_agm_ecref_path\n");
+    if (g_verbose)
+        printf("---set_agm_ecref_path\n");
 
     char *control;
     char *mixer_str;
@@ -607,7 +630,7 @@ int set_agm_ecref_path(char* cp_frontend_name, char* pb_backend_name, bool enabl
     ret = set_mixer_ctl_string(mixer_str, mixer_enum);
 
     // Print success message with the mixer control and the enum/string
-    if (ret == 0) {
+    if (ret == 0 && g_verbose) {
         printf("---\t\tmixer ctl: %s %s\n", mixer_str, mixer_enum);
     }
 
@@ -624,22 +647,26 @@ void start_tag(void *userdata, const XML_Char *tag_name, const XML_Char **attr)
         return;
 
     if (strcmp(attr[0], "name") != 0) {
-        printf("name not found\n");
+        if (g_verbose)
+            printf("name not found\n");
         return;
     }
 
     if (strcmp(attr[2], "rate") != 0) {
-        printf("rate not found\n");
+        if (g_verbose)
+            printf("rate not found\n");
         return;
     }
 
     if (strcmp(attr[4], "ch") != 0) {
-        printf("channels not found\n");
+        if (g_verbose)
+            printf("channels not found\n");
         return;
     }
 
     if (strcmp(attr[6], "bits") != 0) {
-        printf("bits not found\n");
+        if (g_verbose)
+            printf("bits not found\n");
         return;
     }
 
@@ -725,14 +752,16 @@ int get_backend_config(const char* filename, char *backend_name, struct device_c
     file = fopen(filename, "r");
     if (!file) {
         ret = -EINVAL;
-        printf("Failed to open xml file name %s ret %d\n", filename, ret);
+        if (g_verbose)
+            printf("Failed to open xml file name %s ret %d\n", filename, ret);
         goto done;
     }
 
     parser = XML_ParserCreate(NULL);
     if (!parser) {
         ret = -EINVAL;
-        printf("Failed to create XML ret %d\n", ret);
+        if (g_verbose)
+            printf("Failed to create XML ret %d\n", ret);
         goto closeFile;
     }
 
@@ -745,20 +774,23 @@ int get_backend_config(const char* filename, char *backend_name, struct device_c
         buf = XML_GetBuffer(parser, 1024);
         if (buf == NULL) {
             ret = -EINVAL;
-            printf("XML_Getbuffer failed ret %d\n", ret);
+            if (g_verbose)
+                printf("XML_Getbuffer failed ret %d\n", ret);
             goto freeParser;
         }
 
         bytes_read = fread(buf, 1, 1024, file);
         if (bytes_read < 0) {
             ret = -EINVAL;
-            printf("fread failed ret %d\n", ret);
+            if (g_verbose)
+                printf("fread failed ret %d\n", ret);
             goto freeParser;
         }
 
         if (XML_ParseBuffer(parser, bytes_read, bytes_read == 0) == XML_STATUS_ERROR) {
             ret = -EINVAL;
-            printf("XML ParseBuffer failed for %s file ret %d\n", filename, ret);
+            if (g_verbose)
+                printf("XML ParseBuffer failed for %s file ret %d\n", filename, ret);
             goto freeParser;
         }
         if (bytes_read == 0 || config->rate != 0)
@@ -767,7 +799,8 @@ int get_backend_config(const char* filename, char *backend_name, struct device_c
 
     if (config->rate == 0) {
         ret = -EINVAL;
-        printf("Entry not found\n");
+        if (g_verbose)
+            printf("Entry not found\n");
     }
 freeParser:
     XML_ParserFree(parser);
@@ -779,7 +812,8 @@ done:
 
 int set_agm_backend_config(char *backend_name, struct device_config *config)
 {
-    printf("---set_agm_backend_config\n");
+    if (g_verbose)
+        printf("---set_agm_backend_config\n");
 
     char *control = (char *)"rate ch fmt";
     char *mixer_str;
@@ -805,7 +839,7 @@ int set_agm_backend_config(char *backend_name, struct device_config *config)
     ret = set_mixer_ctl_array(mixer_str, media_config, sizeof(media_config)/sizeof(media_config[0]));
 
     // Print success message with all key-value pairs
-    if (ret == 0) {
+    if (ret == 0 && g_verbose) {
         printf("---\tmixer ctl: %s (data type) %ld %ld %ld %ld\n", mixer_str, media_config[0], media_config[1], media_config[2],
                media_config[3]);
     }
@@ -817,7 +851,8 @@ int set_agm_backend_config(char *backend_name, struct device_config *config)
 int get_agm_module_iid(char *frontend_name, char *backend_name, int tag_id,
                        uint32_t *miid, uint32_t *mid)
 {
-    printf("---get_agm_module_iid, searching for tag 0x%X (%s)\n", tag_id, get_tag_name(tag_id));
+    if (g_verbose)
+        printf("---get_agm_module_iid, searching for tag 0x%X (%s)\n", tag_id, get_tag_name(tag_id));
 
     char *control = (char *)"getTaggedInfo";
     char *mixer_str;
@@ -854,36 +889,43 @@ int get_agm_module_iid(char *frontend_name, char *backend_name, int tag_id,
         return ret;
     }
 
-    printf("---\t%s\n", mixer_str);
+    if (g_verbose)
+        printf("---\t%s\n", mixer_str);
 
     tag_info = (struct gsl_tag_module_info *)payload;
     ret = -1;
     tag_entry_ptr = (char *)&tag_info->tag_module_entry[0]; // cast useful to apply byte offset in between entries
 
-    printf("---\tnum_tags: %d\n", tag_info->num_tags);
+    if (g_verbose)
+        printf("---\tnum_tags: %d\n", tag_info->num_tags);
 
     int found=0;
     for (i = 0; i < (int)tag_info->num_tags; i++) {
-        tag_entry = (struct gsl_tag_module_info_entry *)tag_entry_ptr; // current tag_entry, variable-length struct 
-        tag_entry_ptr += sizeof(struct gsl_tag_module_info_entry) + 
+        tag_entry = (struct gsl_tag_module_info_entry *)tag_entry_ptr; // current tag_entry, variable-length struct
+        tag_entry_ptr += sizeof(struct gsl_tag_module_info_entry) +
            (tag_entry->num_modules * sizeof(struct gsl_module_id_info_entry)); // move poitner to next entry via byte offset
 
-        printf("---\t\ttag_entry %d, id: 0x%X (%s)\n", i, tag_entry->tag_id, get_tag_name(tag_entry->tag_id));
-        
+        if (g_verbose)
+            printf("---\t\ttag_entry %d, id: 0x%X (%s)\n", i, tag_entry->tag_id, get_tag_name(tag_entry->tag_id));
+
         if(found)
             continue; // or beak if we don't want to see other modules's iids!
 
         if (tag_entry->tag_id == (u_int32_t)tag_id) {
-            printf("---\t\t\tfound tag id 0x%X (%s)\n", tag_entry->tag_id, get_tag_name(tag_id));
+            if (g_verbose)
+                printf("---\t\t\tfound tag id 0x%X (%s)\n", tag_entry->tag_id, get_tag_name(tag_id));
             struct gsl_module_id_info_entry *mod_info_entry;
 
             if (tag_entry->num_modules) {
-                printf("---\t\t\ttag_entry[%d].num_modules: %d\n", i, tag_entry->num_modules);
+                if (g_verbose)
+                    printf("---\t\t\ttag_entry[%d].num_modules: %d\n", i, tag_entry->num_modules);
                  mod_info_entry = &tag_entry->module_entry[0];
                  *mid = mod_info_entry->module_id;
                  *miid = mod_info_entry->module_iid;
-                 printf("---\t\t\ttag_entry[%d].module_entry[0].id: 0x%X\n", i, mod_info_entry->module_id);
-                 printf("---\t\t\ttag_entry[%d].module_entry[0].iid: 0x%X\n", i, mod_info_entry->module_iid);
+                 if (g_verbose) {
+                     printf("---\t\t\ttag_entry[%d].module_entry[0].id: 0x%X\n", i, mod_info_entry->module_id);
+                     printf("---\t\t\ttag_entry[%d].module_entry[0].iid: 0x%X\n", i, mod_info_entry->module_iid);
+                 }
                  ret = 0;
                  found=1;
             }
@@ -891,7 +933,8 @@ int get_agm_module_iid(char *frontend_name, char *backend_name, int tag_id,
     }
 
     if (found == 0) {
-        printf("---\tCould not find tag 0x%X (%s)\n", tag_id, get_tag_name(tag_id));
+        if (g_verbose)
+            printf("---\tCould not find tag 0x%X (%s)\n", tag_id, get_tag_name(tag_id));
         ret = 1;
     }
 
@@ -916,7 +959,7 @@ int set_agm_param(char *frontend_name, void *payload, uint32_t size)
     ret = set_mixer_ctl_array(mixer_str, payload, size);
 
     // Print success message with all key-value pairs
-    if (ret == 0) {
+    if (ret == 0 && g_verbose) {
         printf("---\tmixer ctl: %s payload\n", mixer_str);
     }
 
@@ -946,7 +989,7 @@ int get_agm_param(char *frontend_name, void *payload, uint32_t size)
     // Read the response back into the same buffer.
     // AGM populates the bytes after the header with the actual param value.
     ret = get_mixer_ctl_array(mixer_str, payload, size);
-    if (ret == 0) {
+    if (ret == 0 && g_verbose) {
         printf("---\tmixer ctl: %s payload (get)\n", mixer_str);
     }
 
@@ -1094,7 +1137,8 @@ static uint8_t* create_agm_param_payload(size_t param_size,
 int configure_agm_mfc(char *frontend_name, unsigned int rate, unsigned int channels,
                   unsigned int bits, uint32_t miid)
 {
-    printf("---configure_agm_mfc\n");
+    if (g_verbose)
+        printf("---configure_agm_mfc\n");
 
     int ret = 0;
     struct apm_module_param_data_t* header = NULL;
@@ -1133,12 +1177,14 @@ int configure_agm_mfc(char *frontend_name, unsigned int rate, unsigned int chann
     
     paddedSize = payloadSize + padBytes;
 
-    printf("---\tpayload:\n");
-    printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
-    printf("---\t\theader->param_id: 0x%X (PARAM_ID_MFC_OUTPUT_MEDIA_FORMAT)\n", header->param_id);
-    printf("---\t\tmfc_outMediaFmt->sampling_rate: %d\n", rate);
-    printf("---\t\tmfc_outMediaFmt->bit_width: %d\n", bits);
-    printf("---\t\tmfc_outMediaFmt->num_channels: %d\n", channels);
+    if (g_verbose) {
+        printf("---\tpayload:\n");
+        printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
+        printf("---\t\theader->param_id: 0x%X (PARAM_ID_MFC_OUTPUT_MEDIA_FORMAT)\n", header->param_id);
+        printf("---\t\tmfc_outMediaFmt->sampling_rate: %d\n", rate);
+        printf("---\t\tmfc_outMediaFmt->bit_width: %d\n", bits);
+        printf("---\t\tmfc_outMediaFmt->num_channels: %d\n", channels);
+    }
 
     ret = set_agm_param(frontend_name, (void *)payload, paddedSize);
 
@@ -1148,7 +1194,8 @@ int configure_agm_mfc(char *frontend_name, unsigned int rate, unsigned int chann
 
 int configure_agm_dma_sink(char *frontend_name, unsigned int frame_size_fcr, uint32_t miid)
 {
-    printf("---configure_agm_dma_sink\n");
+    if (g_verbose)
+        printf("---configure_agm_dma_sink\n");
 
     int ret = 0;
     struct apm_module_param_data_t* header = NULL;
@@ -1179,10 +1226,12 @@ int configure_agm_dma_sink(char *frontend_name, unsigned int frame_size_fcr, uin
     
     paddedSize = payloadSize + padBytes;
 
-    printf("---\tpayload:\n");
-    printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
-    printf("---\t\theader->param_id: 0x%X (PARAM_ID_HW_EP_FRAME_SIZE_FACTOR)\n", header->param_id);
-    printf("---\t\tdmaSink_frmSizeFcr->frame_size_factor: %d\n", frame_size_fcr);
+    if (g_verbose) {
+        printf("---\tpayload:\n");
+        printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
+        printf("---\t\theader->param_id: 0x%X (PARAM_ID_HW_EP_FRAME_SIZE_FACTOR)\n", header->param_id);
+        printf("---\t\tdmaSink_frmSizeFcr->frame_size_factor: %d\n", frame_size_fcr);
+    }
 
     ret = set_agm_param(frontend_name, (void *)payload, paddedSize);
 
@@ -1234,7 +1283,8 @@ int configure_agm_dma_sink(char *frontend_name, unsigned int frame_size_fcr, uin
 int configure_agm_alsa_sink(char *frontend_name, unsigned int card_id, unsigned int device_id,
                             unsigned int period_cnt, unsigned int frame_size_fcr, uint32_t miid)
 {
-    printf("---configure_agm_alsa_sink\n");
+    if (g_verbose)
+        printf("---configure_agm_alsa_sink\n");
 
     int ret = 0;
     struct apm_module_param_data_t* header = NULL;
@@ -1272,15 +1322,17 @@ int configure_agm_alsa_sink(char *frontend_name, unsigned int card_id, unsigned 
     
     paddedSize = payloadSize + padBytes;
 
-    printf("---\tpayload:\n");
-    printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
-    printf("---\t\theader->param_id: 0x%X (PARAM_ID_ALSA_DEVICE_INTF_CFG)\n", header->param_id);
-    printf("---\t\talsaSink_devIntfCfg->card_id: %d\n", card_id);
-    printf("---\t\talsaSink_devIntfCfg->device_id: %d\n", device_id);
-    printf("---\t\talsaSink_devIntfCfg->period_count: %d\n", period_cnt);
-    printf("---\t\talsaSink_devIntfCfg->start_threshold: %d\n", 0);
-    printf("---\t\talsaSink_devIntfCfg->stop_threshold: %d\n", 0);
-    printf("---\t\talsaSink_devIntfCfg->silence_threshold: %d\n", 0);
+    if (g_verbose) {
+        printf("---\tpayload:\n");
+        printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
+        printf("---\t\theader->param_id: 0x%X (PARAM_ID_ALSA_DEVICE_INTF_CFG)\n", header->param_id);
+        printf("---\t\talsaSink_devIntfCfg->card_id: %d\n", card_id);
+        printf("---\t\talsaSink_devIntfCfg->device_id: %d\n", device_id);
+        printf("---\t\talsaSink_devIntfCfg->period_count: %d\n", period_cnt);
+        printf("---\t\talsaSink_devIntfCfg->start_threshold: %d\n", 0);
+        printf("---\t\talsaSink_devIntfCfg->stop_threshold: %d\n", 0);
+        printf("---\t\talsaSink_devIntfCfg->silence_threshold: %d\n", 0);
+    }
 
     ret = set_agm_param(frontend_name, (void *)payload, paddedSize);
 
@@ -1312,10 +1364,12 @@ int configure_agm_alsa_sink(char *frontend_name, unsigned int card_id, unsigned 
     
     paddedSize = payloadSize + padBytes;
 
-    printf("---\tpayload:\n");
-    printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
-    printf("---\t\theader->param_id: 0x%X (PARAM_ID_HW_EP_FRAME_SIZE_FACTOR)\n", header->param_id);
-    printf("---\t\talsaSink_frmSizeFcr->frame_size_factor: %d\n", frame_size_fcr);
+    if (g_verbose) {
+        printf("---\tpayload:\n");
+        printf("---\t\theader->module_instance_id: 0x%X\n", header->module_instance_id);
+        printf("---\t\theader->param_id: 0x%X (PARAM_ID_HW_EP_FRAME_SIZE_FACTOR)\n", header->param_id);
+        printf("---\t\talsaSink_frmSizeFcr->frame_size_factor: %d\n", frame_size_fcr);
+    }
 
     ret = set_agm_param(frontend_name, (void *)payload, paddedSize);
 
@@ -1326,7 +1380,8 @@ int configure_agm_alsa_sink(char *frontend_name, unsigned int card_id, unsigned 
 
 int inspect_agm_mfc(char *frontend_name, uint32_t miid)
 {
-    printf("---inspect_agm_mfc\n");
+    if (g_verbose)
+        printf("---inspect_agm_mfc\n");
 
     int ret = 0;
     struct apm_module_param_data_t *get_header = NULL;
@@ -1350,7 +1405,7 @@ int inspect_agm_mfc(char *frontend_name, uint32_t miid)
     get_paddedSize = get_payloadSize + get_padBytes;
 
     ret = get_agm_param(frontend_name, (void *)get_payload, get_paddedSize);
-    if (ret == 0) {
+    if (ret == 0 && g_verbose) {
         get_header = (struct apm_module_param_data_t *)get_payload;
         printf("---\tresponse header:\n");
         printf("---\t\tmodule_instance_id: 0x%X\n", get_header->module_instance_id);
@@ -1378,7 +1433,8 @@ int inspect_agm_mfc(char *frontend_name, uint32_t miid)
 
 int inspect_agm_dma_sink(char *frontend_name, uint32_t miid)
 {
-    printf("---inspect_agm_dma_sink\n");
+    if (g_verbose)
+        printf("---inspect_agm_dma_sink\n");
 
     int ret = 0;
     
@@ -1405,7 +1461,7 @@ int inspect_agm_dma_sink(char *frontend_name, uint32_t miid)
         get_paddedSize = get_payloadSize + get_padBytes;
 
         ret = get_agm_param(frontend_name, (void *)get_payload, get_paddedSize);
-        if (ret == 0) {
+        if (ret == 0 && g_verbose) {
             get_header = (struct apm_module_param_data_t *)get_payload;
             printf("---\tresponse header (FRAME_SIZE_FACTOR):\n");
             printf("---\t\tmodule_instance_id: 0x%X\n", get_header->module_instance_id);
@@ -1451,7 +1507,7 @@ int inspect_agm_dma_sink(char *frontend_name, uint32_t miid)
 
         // Issues the get request and reads the response into the same buffer.
         ret = get_agm_param(frontend_name, (void *)get_payload, get_paddedSize);
-        if (ret == 0) {
+        if (ret == 0 && g_verbose) {
             get_header = (struct apm_module_param_data_t *)get_payload;
             printf("---\tresponse header:\n");
             printf("---\t\tmodule_instance_id: 0x%X\n", get_header->module_instance_id);
@@ -1494,7 +1550,8 @@ int init_agm_mixer(unsigned int virtual_card)
 {
     g_mixer = mixer_open(virtual_card);
     if (!g_mixer) {
-        printf("Failed to open mixer\n");
+        if (g_verbose)
+            printf("Failed to open mixer\n");
         return -1;
     }
     return 0;
@@ -1517,11 +1574,13 @@ int setup_agm_mixer_graph(char *frontend_name, char *backend_name, const char *b
     struct device_config backend_config;
 
     if (!g_mixer) {
-        printf("Mixer not open; call init_agm_mixer() first\n");
+        if (g_verbose)
+            printf("Mixer not open; call init_agm_mixer() first\n");
         return -1;
     }
     if (g_num_endpoints >= AGM_MAX_ENDPOINTS) {
-        printf("Too many graphs set up (max %d)\n", AGM_MAX_ENDPOINTS);
+        if (g_verbose)
+            printf("Too many graphs set up (max %d)\n", AGM_MAX_ENDPOINTS);
         return -1;
     }
 
@@ -1530,7 +1589,8 @@ int setup_agm_mixer_graph(char *frontend_name, char *backend_name, const char *b
 
     // retrieve standard configuration of backend card
     if (get_backend_config(backend_xml, be, &backend_config)) {
-        printf("Invalid backend card, entry not found for: %s\n", be);
+        if (g_verbose)
+            printf("Invalid backend card, entry not found for: %s\n", be);
         ret = -1;
         goto done;
     }
@@ -1541,11 +1601,13 @@ int setup_agm_mixer_graph(char *frontend_name, char *backend_name, const char *b
 
     // intialize backend via mixer with its standard configuration
     if (set_agm_backend_config(be, &backend_config)) {
-        printf("Failed to configure backend %s\n", be);
+        if (g_verbose)
+            printf("Failed to configure backend %s\n", be);
         ret = -1;
         goto done;
     }
-    printf("\n");
+    if (g_verbose)
+        printf("\n");
 
 
     // let's build the graph!
@@ -1564,7 +1626,8 @@ int setup_agm_mixer_graph(char *frontend_name, char *backend_name, const char *b
 
     // Allocate array if we have any non-zero values
     if (num_graph_kv == 0) {
-        printf("Empty graph key-value vector, no use case can be loaded\n");
+        if (g_verbose)
+            printf("Empty graph key-value vector, no use case can be loaded\n");
         ret = -1;
         goto done;
     }
@@ -1605,18 +1668,21 @@ int setup_agm_mixer_graph(char *frontend_name, char *backend_name, const char *b
 
     // build graph
     if (set_agm_graph(fe, graph_kv, num_graph_kv)) {
-        printf("Failed to build graph for use case\n");
+        if (g_verbose)
+            printf("Failed to build graph for use case\n");
         ret = -1;
         goto done;
     }
 
     // connect frontend and backend to graph
     if (connect_agm_frontend_to_backend(fe, be, true)) {
-        printf("Failed to connect pcm to audio interface\n");
+        if (g_verbose)
+            printf("Failed to connect pcm to audio interface\n");
         ret = -1;
         goto done;
     }
-    printf("\n");
+    if (g_verbose)
+        printf("\n");
 
     // commit: ownership of fe/be transfers to g_endpoints
     g_endpoints[g_num_endpoints].frontend_name = fe;
@@ -1668,31 +1734,37 @@ int configure_agm_modules(unsigned int physical_card, unsigned int physical_devi
 
     // retrieve the instance id of the PSPD MFC module...
     if (get_agm_module_iid(g_endpoints[0].frontend_name, g_endpoints[0].backend_name, PER_STREAM_PER_DEVICE_MFC, &miid, &mid) == 0) {
-        printf("\n");
+        if (g_verbose)
+            printf("\n");
         // ...and use it to configure one of its params
         if (configure_agm_mfc(g_endpoints[0].frontend_name, g_endpoints[0].backend_config.rate,
                               g_endpoints[0].backend_config.ch, g_endpoints[0].backend_config.bits, miid)) {
-            printf("Failed to configure pspd mfc\n");
+            if (g_verbose)
+                printf("Failed to configure pspd mfc\n");
             return -1;
-        }    
-    } 
+        }
+    }
     else {
-        printf("MFC not present in this graph\n");
+        if (g_verbose)
+            printf("MFC not present in this graph\n");
         //return -1; //VIC we can live without an MFC module
     }
-    printf("\n");
+    if (g_verbose)
+        printf("\n");
 
-    
+
     // same with the device hardware endpoint rx (sink) module found in the device subgraph...
     // skip if the physical PCM is already open by another instance (can only be configured once, before pcm_start)
     if (!is_alsa_pcm_open(physical_card, physical_device)) {
         if (get_agm_module_iid(g_endpoints[0].frontend_name, g_endpoints[0].backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) == 0) {
-            printf("\n");
+            if (g_verbose)
+                printf("\n");
 
             // different configurations for different sink modules
             if(mid == MODULE_ID_CODEC_DMA_SINK)  {
                 if (configure_agm_dma_sink(g_endpoints[0].frontend_name, frame_size_fcr, miid)) {
-                    printf("Failed to configure Coced DMA Sink\n");
+                    if (g_verbose)
+                        printf("Failed to configure Coced DMA Sink\n");
                     return -1;
                 }
             }
@@ -1701,20 +1773,24 @@ int configure_agm_modules(unsigned int physical_card, unsigned int physical_devi
                 // ...we configure two of its params
                 if (configure_agm_alsa_sink(g_endpoints[0].frontend_name, physical_card, physical_device,
                                             period_count, frame_size_fcr, miid)) {
-                    printf("Failed to configure Alsa Device Sink\n");
+                    if (g_verbose)
+                        printf("Failed to configure Alsa Device Sink\n");
                     return -1;
                 }
             }
         }
         else {
-            printf("Device Hardware Endpoint Rx not present in this graph!\n");
+            if (g_verbose)
+                printf("Device Hardware Endpoint Rx not present in this graph!\n");
             return -1; //VIC a module tagged as DEVICE_HW_ENDPOINT_RX is absolutely needed for playback
         }
     }
     else {
-        printf("Skipping Hardware Endpoint Rx configuration: physical PCM %u:%u already open\n", physical_card, physical_device);
+        if (g_verbose)
+            printf("Skipping Hardware Endpoint Rx configuration: physical PCM %u:%u already open\n", physical_card, physical_device);
     }
-    printf("\n");
+    if (g_verbose)
+        printf("\n");
 
 
     return 0;
@@ -1729,38 +1805,46 @@ int inspect_agm_modules()
 
     // retrieve the instance id of the PSPD MFC module...
     if (get_agm_module_iid(g_endpoints[0].frontend_name, g_endpoints[0].backend_name, PER_STREAM_PER_DEVICE_MFC, &miid, &mid) == 0) {
-        printf("\n");
+        if (g_verbose)
+            printf("\n");
         if (inspect_agm_mfc(g_endpoints[0].frontend_name, miid)) {
-            printf("Failed to configure pspd mfc\n");
+            if (g_verbose)
+                printf("Failed to configure pspd mfc\n");
             return -1;
-        }    
-    } 
+        }
+    }
     else {
-        printf("MFC not present in this graph\n");
+        if (g_verbose)
+            printf("MFC not present in this graph\n");
         //return -1; //VIC we can live without an MFC module
     }
-    printf("\n");
+    if (g_verbose)
+        printf("\n");
 
-    
+
     // same with the device hardware endpoint rx (sink) module found in the device subgraph...
     if (get_agm_module_iid(g_endpoints[0].frontend_name, g_endpoints[0].backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) == 0) {
-        printf("\n");
+        if (g_verbose)
+            printf("\n");
         if(mid == MODULE_ID_CODEC_DMA_SINK) {
             // ...and use it to configure one of its params
             if (inspect_agm_dma_sink(g_endpoints[0].frontend_name, miid)) {
-                printf("Failed to inspect Coced DMA Sink\n");
+                if (g_verbose)
+                    printf("Failed to inspect Coced DMA Sink\n");
                 return -1;
-            }    
+            }
         }
         else {
             return 0; //VIC for now we don't inspect anything else
         }
-    } 
+    }
     else {
-        printf("Device Hardware Endpoint Rx not present in this graph!\n");
+        if (g_verbose)
+            printf("Device Hardware Endpoint Rx not present in this graph!\n");
         return -1; //VIC a module tagged as DEVICE_HW_ENDPOINT_RX is absolutely needed for playback
     }
-    printf("\n");
+    if (g_verbose)
+        printf("\n");
  
     return 0;
 }

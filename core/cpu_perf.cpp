@@ -20,6 +20,13 @@
 #define CPU_GOVERNOR_PATH_FMT "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor"
 #define GOVERNOR_PERFORMANCE  "performance"
 
+static bool g_verbose = false;
+
+void set_cpu_perf_verbose(bool verbose)
+{
+    g_verbose = verbose;
+}
+
 // ---------------------------------------------------------------------------
 // CPU enumeration
 // ---------------------------------------------------------------------------
@@ -97,7 +104,8 @@ int set_cpu_affinity_attr(pthread_attr_t *attr, int cpu_index)
         return -1;
     }
 
-    printf("Pinning audio thread to CPU %d\n", cpu_index);
+    if (g_verbose)
+        printf("Pinning audio thread to CPU %d\n", cpu_index);
     return 0;
 }
 
@@ -169,7 +177,8 @@ int force_performance_governor(struct governor_snapshot *snap)
             continue;
         }
 
-        printf("Forcing performance governor on CPU %d (was: %s)\n", cpu, snap->governor[idx]);
+        if (g_verbose)
+            printf("Forcing performance governor on CPU %d (was: %s)\n", cpu, snap->governor[idx]);
         snap->changed[idx] = true;
     }
 
@@ -184,7 +193,7 @@ void restore_governors(const struct governor_snapshot *snap)
 
         if (write_governor(snap->cpu_id[i], snap->governor[i]) != 0)
             fprintf(stderr, "warning: could not restore CPU %d governor to '%s'\n", snap->cpu_id[i], snap->governor[i]);
-        else
+        else if (g_verbose)
             printf("Restoring CPU %d governor to %s\n", snap->cpu_id[i], snap->governor[i]);
     }
 }

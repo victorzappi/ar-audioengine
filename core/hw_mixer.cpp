@@ -40,6 +40,13 @@ struct path {
     int resolving;                      // on the current recursion stack (cycle guard)
 };
 
+static bool g_verbose = false;
+
+void set_hw_mixer_verbose(bool verbose)
+{
+    g_verbose = verbose;
+}
+
 static struct mixer *g_mixer = NULL;
 static struct ctl_setting g_defaults[MAX_CTLS];
 static int g_default_count = 0;
@@ -269,7 +276,8 @@ int set_hw_mixer_path(const char *path_name)
     for (int j = 0; j < p->ctl_count; j++)
         apply_ctl(p->ctls[j].name, p->ctls[j].value);
 
-    printf("hw_mixer: applied path '%s' (%d ctls)\n\n", path_name, p->ctl_count);
+    if (g_verbose)
+        printf("hw_mixer: applied path '%s' (%d ctls)\n\n", path_name, p->ctl_count);
     return 0;
 }
 

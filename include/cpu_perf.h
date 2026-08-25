@@ -9,6 +9,10 @@
 
 #include <pthread.h>
 
+// gate this module's informational printf() output; error/warning fprintf(stderr, ...)
+// output is always printed regardless. call once, before any other cpu_perf function.
+void set_cpu_perf_verbose(bool verbose);
+
 #define CPU_AFFINITY_UNSET (-1)   // sentinel: no affinity requested (default)
 #define MAX_TRACKED_CPUS 16       // headroom above QCS6490's 8 cores
 
