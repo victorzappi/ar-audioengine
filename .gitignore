@@ -41,9 +41,8 @@ obj/
 .DS_Store
 Thumbs.db
 
-# Temporary local projects
-_projects
-_projects/
+# Temporary local folders
+/_*/
 
 # neural models that need author's permission
 *.nam
