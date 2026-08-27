@@ -52,7 +52,7 @@ void init_settings(struct settings *settings)
     playback->is_float = false;
 
     playback->config.period_size = 960;
-    playback->config.period_count = 4;
+    playback->config.period_count = 2;
     playback->config.channels = 2;
     playback->config.rate = 48000;
     playback->config.format = PCM_FORMAT_INVALID;  // derived from bits/is_float in init_ctx
@@ -93,7 +93,7 @@ void init_settings(struct settings *settings)
     capture->is_float = false;
 
     capture->config.period_size = 960;
-    capture->config.period_count = 4;
+    capture->config.period_count = 2;
     capture->config.channels = 2;
     capture->config.rate = 48000;
     capture->config.format = PCM_FORMAT_INVALID;  // derived from bits/is_float in init_ctx
