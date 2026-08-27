@@ -55,7 +55,7 @@ message(STATUS "=== Configuring ar_audioengine ===")
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
-message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "Build type:                       ${CMAKE_BUILD_TYPE}")
 #-------------------------------------------------------------------------
 
 
@@ -81,14 +81,12 @@ if(PROJECT_PATH)
     if(EXISTS "${PROJECT_PATH}/render.cpp")
         file(GLOB PROJECT_SRCS "${PROJECT_PATH}/*.cpp")
         list(APPEND CORE_SRCS ${PROJECT_SRCS})
-        message(STATUS "Project path: ${PROJECT_PATH}")
     else()
         message(FATAL_ERROR "No render.cpp found in ${PROJECT_PATH}")
     endif()
 else()
     # if no project path is passed, we default to simpler sine renderer
     list(APPEND CORE_SRCS core/default_render.cpp)
-    message(STATUS "Project: default (no PROJECT_PATH set)")
 endif()
 #-------------------------------------------------------------------------
 
@@ -121,28 +119,39 @@ if(PROJECT_PATH)
     get_filename_component(PROJECT_NAME_STR "${PROJECT_PATH_CLEAN}" NAME)
     # Pass project name as compile definition so main.cpp can print it at run-time
     target_compile_definitions(ar_audioengine PRIVATE PROJECT_NAME="${PROJECT_NAME_STR}")
+    message(STATUS "Project (PROJECT_NAME):           ${PROJECT_NAME_STR}  [PROJECT_PATH=${PROJECT_PATH}]")
 else()
     target_compile_definitions(ar_audioengine PRIVATE PROJECT_NAME="default")
+    message(STATUS "Project (PROJECT_NAME):           default  [default, PROJECT_PATH not set]")
 endif()
 
-# board-specific xml file paths 
-if(NOT MIXER_PATHS)
+# board-specific xml file paths
+if(MIXER_PATHS)
+    set(MIXER_PATHS_SRC "user-specified")
+else()
     set(MIXER_PATHS "/etc/mixer_paths_QCS6490_RB3Gen2.xml") #set(MIXER_PATHS "/etc/mixer_paths_qcs6490_rb3gen2.xml")
+    set(MIXER_PATHS_SRC "default")
 endif()
-if(NOT BACKEND_CONF_FILE)
+if(BACKEND_CONF_FILE)
+    set(BACKEND_CONF_FILE_SRC "user-specified")
+else()
     set(BACKEND_CONF_FILE "/etc/backend_conf.xml")
+    set(BACKEND_CONF_FILE_SRC "default")
 endif()
-if(NOT CARDS_CONF_FILE)
+if(CARDS_CONF_FILE)
+    set(CARDS_CONF_FILE_SRC "user-specified")
+else()
     set(CARDS_CONF_FILE "/etc/card-defs.xml")
+    set(CARDS_CONF_FILE_SRC "default")
 endif()
 target_compile_definitions(ar_audioengine PRIVATE
     MIXER_PATHS="${MIXER_PATHS}"
     BACKEND_CONF_FILE="${BACKEND_CONF_FILE}"
     CARDS_CONF_FILE="${CARDS_CONF_FILE}"
 )
-message(STATUS "Mixer paths: ${MIXER_PATHS}")
-message(STATUS "Backend conf: ${BACKEND_CONF_FILE}")
-message(STATUS "Cards conf: ${CARDS_CONF_FILE}")
+message(STATUS "Mixer paths (MIXER_PATHS):        ${MIXER_PATHS}  [${MIXER_PATHS_SRC}]")
+message(STATUS "Backend conf (BACKEND_CONF_FILE): ${BACKEND_CONF_FILE}  [${BACKEND_CONF_FILE_SRC}]")
+message(STATUS "Cards conf (CARDS_CONF_FILE):     ${CARDS_CONF_FILE}  [${CARDS_CONF_FILE_SRC}]")
 #-------------------------------------------------------------------------
 
 
