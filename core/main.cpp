@@ -684,7 +684,7 @@ int main(int argc, char **argv)
     cleanup_ctx(ctx);
     cleanup_settings(&settings);
 
-    printf("AudioReach Audioengine | project: %s exited successfully\n\n", PROJECT_NAME);
+    printf("\nAudioReach Audioengine | project: %s exited successfully\n\n", PROJECT_NAME);
 
     return EXIT_SUCCESS;
 }
