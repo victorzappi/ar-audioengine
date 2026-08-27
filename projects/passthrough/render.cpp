@@ -15,7 +15,7 @@
 
 int setup(struct audio_ctx *ctx, void *user_data)
 {
-    if (ctx->input_buffer == nullptr) {
+    if (ctx->audio_in == nullptr) {
         fprintf(stderr, "passthrough needs capture active: run full-duplex (drop -u/--no-capture)\n");
         return -1;
     }
@@ -28,11 +28,11 @@ void render(struct audio_ctx *ctx, void *user_data)
 
     for (unsigned int n = 0; n < ctx->period_size; n++) {
         // first capture channel of this frame
-        float sample = ctx->input_buffer[n * channels];
+        float sample = ctx->audio_in[n * channels];
 
         // fan it out to every playback channel
         for (unsigned int chn = 0; chn < channels; chn++)
-            ctx->audio_buffer[n * channels + chn] = sample;
+            ctx->audio_out[n * channels + chn] = sample;
     }
 }
 

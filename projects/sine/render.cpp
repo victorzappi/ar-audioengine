@@ -32,7 +32,7 @@ void render(struct audio_ctx *ctx, void *user_data)
 			phase -= 2.0f * M_PI;
 
         for (unsigned int chn=0; chn<ctx->channels; chn++)
-            ctx->audio_buffer[n*ctx->channels + chn] = sample;
+            ctx->audio_out[n*ctx->channels + chn] = sample;
     }
 }
 

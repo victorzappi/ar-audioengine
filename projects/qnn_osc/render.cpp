@@ -289,7 +289,7 @@ void render(struct audio_ctx *ctx, void *user_data)
     {
         const float sample = g_outputDataBuffers[g_outputIdx][frame];
         for (unsigned int channel = 0; channel < ctx->channels; ++channel)
-            ctx->audio_buffer[(frame * ctx->channels) + channel] = sample;
+            ctx->audio_out[(frame * ctx->channels) + channel] = sample;
     }
 }
 

@@ -14,9 +14,7 @@ configure, build and clean commands in CMakeLists.txt
 
 // next steps:
 // _improve doc: general, qnn, onnx and maybe rtneural
-// _rename audio_ctx and in all projects + align code style across projects: 
-// __audio_buffer -> audio_out
-// __input_buffer -> audio_in
+// _align code style across projects
 // _add option to create audioreach_mappings.h at config time, by passing location of kvh2xml.h of target board
 // _re-introduce per-direction hardware endpoint / MFC configuration (the old
 //  configure_agm_modules, RX-only) for both RX and TX, if needed for clean audio
@@ -410,14 +408,14 @@ void sig_handler(int sig)
 // ---------------------------------------------------------------------------
 
 // build the render context: capture samples are the input, playback samples the
-// output. cap is nullptr in playback-only mode (input_buffer left null).
+// output. cap is nullptr in playback-only mode (audio_in left null).
 static struct audio_ctx create_audio_ctx(struct pcm_ctx *pb, struct pcm_ctx *cap)
 {
     const struct pcm_config *config = pcm_get_config(pb->pcm);
 
     struct audio_ctx actx = {
-        .input_buffer = cap ? cap->audio_buffer : nullptr,
-        .audio_buffer = pb->audio_buffer,
+        .audio_in     = cap ? cap->audio_buffer : nullptr,
+        .audio_out    = pb->audio_buffer,
         .period_size  = config->period_size,
         .channels     = config->channels,
         .sample_rate  = config->rate

@@ -165,8 +165,8 @@ void render(struct audio_ctx *ctx, void *userData)
 
         // ── Write audio output ───────────────────────────────────────────────
         for (int i = 0; i < BRAVE_BLOCK; i++) {
-            ctx->audio_buffer[(ctx->channels * (offset + i)) + 0] = outputs[0][i];
-            ctx->audio_buffer[(ctx->channels * (offset + i)) + 1] = outputs[0][i];
+            ctx->audio_out[(ctx->channels * (offset + i)) + 0] = outputs[0][i];
+            ctx->audio_out[(ctx->channels * (offset + i)) + 1] = outputs[0][i];
         }
 
         // ── Copy output caches → input caches for next frame ─────────────────

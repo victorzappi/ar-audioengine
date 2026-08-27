@@ -242,13 +242,13 @@ int setup(struct audio_ctx *ctx, void *user_data)
 
 void render(struct audio_ctx *ctx, void *user_data)
 {
-    // Fill ctx->audio_buffer with samples in [-1.0, 1.0]
+    // Fill ctx->audio_out with samples in [-1.0, 1.0]
     // Buffer layout: interleaved channels
     // Buffer size: ctx->period_size * ctx->channels
     for (unsigned int n = 0; n < ctx->period_size; n++) {
         float sample = /* your synthesis here */;
         for (unsigned int c = 0; c < ctx->channels; c++)
-            ctx->audio_buffer[n * ctx->channels + c] = sample;
+            ctx->audio_out[n * ctx->channels + c] = sample;
     }
 }
 

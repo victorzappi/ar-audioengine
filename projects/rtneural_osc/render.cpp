@@ -66,7 +66,7 @@ void render(struct audio_ctx *ctx, void *userData)
 			phase -= 2.0f * (float)M_PI;
 		
         for (unsigned int chn=0; chn<ctx->channels; chn++)
-            ctx->audio_buffer[(n * ctx->channels) + chn] = out;
+            ctx->audio_out[(n * ctx->channels) + chn] = out;
 	}
 }
 

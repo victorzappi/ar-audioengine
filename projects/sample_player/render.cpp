@@ -52,7 +52,7 @@ void render(struct audio_ctx *ctx, void *user_data)
             pos = 0;
 
         for (unsigned int c = 0; c < ctx->channels; c++)
-            ctx->audio_buffer[n * ctx->channels + c] = sample;
+            ctx->audio_out[n * ctx->channels + c] = sample;
     }
 
     readPos = pos;

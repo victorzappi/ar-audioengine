@@ -109,7 +109,7 @@ void render(struct audio_ctx *ctx, void *userData)
         //float out = (float)(inputBuffer[n] * volume);
 
         for (unsigned int chn=0; chn<ctx->channels; chn++)
-            ctx->audio_buffer[(ctx->channels * n) + chn] = out;
+            ctx->audio_out[(ctx->channels * n) + chn] = out;
     }
 }
 

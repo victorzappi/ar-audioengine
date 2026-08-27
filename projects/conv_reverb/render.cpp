@@ -106,7 +106,7 @@ void render(struct audio_ctx *ctx, void *user_data)
 
     for (unsigned int n = 0; n < ctx->period_size; n++)
         for (unsigned int c = 0; c < ctx->channels; c++)
-            ctx->audio_buffer[n * ctx->channels + c] = scratchPtrs[c][n];
+            ctx->audio_out[n * ctx->channels + c] = scratchPtrs[c][n];
 }
 
 void cleanup(struct audio_ctx *ctx, void *user_data)
