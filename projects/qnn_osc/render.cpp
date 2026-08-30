@@ -94,8 +94,7 @@ void processCommandLine(char **argv)
     // long-only option ids: start past the ASCII range so optparse treats them as
     // long-form only, i.e. there are no single-char short options
     // short-form may easily clash with the many arguments dealt with by main
-    enum
-    {
+    enum {
         OPT_QNN_MODEL = 256,
         OPT_QNN_BACKEND,
         OPT_QNN_SYSTEM,
@@ -118,73 +117,58 @@ void processCommandLine(char **argv)
         {0, 0, OPTPARSE_NONE}};
 
     optparse_init(&opts, argv);
-    while ((c = optparse_long(&opts, long_options, NULL)) != -1)
-    {
-        switch (c)
-        {
-        case OPT_QNN_MODEL:
-        {
+    while ((c = optparse_long(&opts, long_options, NULL)) != -1) {
+        switch (c) {
+        case OPT_QNN_MODEL: {
             char *modelPathC = strdup(opts.optarg);
-            if (modelPathC == NULL)
-            {
+            if (modelPathC == NULL) {
                 fprintf(stderr, "failed parsing model path '%s'\n", opts.optarg);
                 std::exit(EXIT_FAILURE);
             }
             modelPath = modelPathC;
             break;
         }
-        case OPT_QNN_BACKEND:
-        {
+        case OPT_QNN_BACKEND: {
             char *backendPathC = strdup(opts.optarg);
-            if (backendPathC == NULL)
-            {
+            if (backendPathC == NULL) {
                 fprintf(stderr, "failed parsing QNN backend path '%s'\n", opts.optarg);
                 std::exit(EXIT_FAILURE);
             }
             backendPath = backendPathC;
             break;
         }
-        case OPT_QNN_SYSTEM:
-        {
+        case OPT_QNN_SYSTEM: {
             char *systemPathC = strdup(opts.optarg);
-            if (systemPathC == NULL)
-            {
+            if (systemPathC == NULL) {
                 fprintf(stderr, "failed parsing system library path '%s'\n", opts.optarg);
                 std::exit(EXIT_FAILURE);
             }
             systemLibraryPath = systemPathC;
             break;
         }
-        case OPT_LOG_LEVEL:
-        {
+        case OPT_LOG_LEVEL: {
             // accept any QNN log level directly (1=ERROR .. 5=DEBUG)
             unsigned int logLevel_i;
-            if (sscanf(opts.optarg, "%u", &logLevel_i) != 1)
-            {
+            if (sscanf(opts.optarg, "%u", &logLevel_i) != 1) {
                 fprintf(stderr, "failed parsing log level '%s'\n", opts.optarg);
                 std::exit(EXIT_FAILURE);
             }
-            if (logLevel_i < 1 || logLevel_i > 5)
-            {
+            if (logLevel_i < 1 || logLevel_i > 5) {
                 fprintf(stderr, "invalid log level '%u' (must be 1=ERROR .. 5=DEBUG)\n", logLevel_i);
                 std::exit(EXIT_FAILURE);
             }
             logLevel = (int)logLevel_i;
             break;
         }
-        case OPT_FREQ:
-        {
-            if (sscanf(opts.optarg, "%f", &frequency) != 1)
-            {
+        case OPT_FREQ: {
+            if (sscanf(opts.optarg, "%f", &frequency) != 1) {
                 fprintf(stderr, "failed parsing frequency '%s'\n", opts.optarg);
                 std::exit(EXIT_FAILURE);
             }
             break;
         }
-        case OPT_AMP:
-        {
-            if (sscanf(opts.optarg, "%f", &amplitude) != 1)
-            {
+        case OPT_AMP: {
+            if (sscanf(opts.optarg, "%f", &amplitude) != 1) {
                 fprintf(stderr, "failed parsing amplitude '%s'\n", opts.optarg);
                 std::exit(EXIT_FAILURE);
             }
@@ -208,15 +192,13 @@ int setup(struct audio_ctx *ctx, void *user_data)
 {
     processCommandLine((char **)user_data);
 
-    if (modelPath.empty() || backendPath.empty() || systemLibraryPath.empty())
-    {
+    if (modelPath.empty() || backendPath.empty() || systemLibraryPath.empty()) {
         std::cerr << "qnn_osc: --qnn-model, --qnn-backend and --qnn-system are all required\n";
         return EXIT_FAILURE;
     }
 
     model.reset(new ar::qnn::QnnModel(backendPath, modelPath, systemLibraryPath));
-    if (!model->load(logLevel))
-    {
+    if (!model->load(logLevel)) {
         std::cerr << "qnn_osc: failed to load model\n";
         return EXIT_FAILURE;
     }
@@ -233,16 +215,14 @@ int setup(struct audio_ctx *ctx, void *user_data)
     const std::vector<uint32_t> &inDims = inputs[g_inputIdx].dims;
     const std::vector<uint32_t> &outDims = outputs[g_outputIdx].dims;
 
-    if (inDims.size() != 2 || inDims[0] != ctx->period_size || inDims[1] != 2)
-    {
+    if (inDims.size() != 2 || inDims[0] != ctx->period_size || inDims[1] != 2) {
         std::cerr << "Given model has incorrect input dimensions (expected [" << ctx->period_size << ", 2]): [ ";
         for (uint32_t dim : inDims)
             std::cerr << dim << " ";
         std::cerr << "]\n";
         return EXIT_FAILURE;
     }
-    if (outDims.size() != 2 || outDims[0] != ctx->period_size || outDims[1] != 1)
-    {
+    if (outDims.size() != 2 || outDims[0] != ctx->period_size || outDims[1] != 1) {
         std::cerr << "Given model has incorrect output dimensions (expected [" << ctx->period_size << ", 1]): [ ";
         for (uint32_t dim : outDims)
             std::cerr << dim << " ";
@@ -271,8 +251,7 @@ void render(struct audio_ctx *ctx, void *user_data)
 {
     // 1. write float inputs (amplitude, phase) into the input buffer, row-major:
     //    the last dimension (2 features) varies fastest.
-    for (size_t frame = 0; frame < ctx->period_size; ++frame)
-    {
+    for (size_t frame = 0; frame < ctx->period_size; ++frame) {
         const size_t inputOffset = frame * 2; // 2 input features
         g_inputDataBuffers[g_inputIdx][inputOffset] = amplitude;
         g_inputDataBuffers[g_inputIdx][inputOffset + 1] = phase;
@@ -285,8 +264,7 @@ void render(struct audio_ctx *ctx, void *user_data)
         return;
 
     // 3. write the model outputs to the audio buffer (same sample to every channel)
-    for (size_t frame = 0; frame < ctx->period_size; ++frame)
-    {
+    for (size_t frame = 0; frame < ctx->period_size; ++frame) {
         const float sample = g_outputDataBuffers[g_outputIdx][frame];
         for (unsigned int channel = 0; channel < ctx->channels; ++channel)
             ctx->audio_out[(frame * ctx->channels) + channel] = sample;
@@ -295,15 +273,13 @@ void render(struct audio_ctx *ctx, void *user_data)
 
 void cleanup(struct audio_ctx *ctx, void *user_data)
 {
-    if (g_inputDataBuffers != nullptr)
-    {
+    if (g_inputDataBuffers != nullptr) {
         for (size_t i = 0; i < g_numInputs; ++i)
             free(g_inputDataBuffers[i]);
         free(g_inputDataBuffers);
         g_inputDataBuffers = nullptr;
     }
-    if (g_outputDataBuffers != nullptr)
-    {
+    if (g_outputDataBuffers != nullptr) {
         for (size_t i = 0; i < g_numOutputs; ++i)
             free(g_outputDataBuffers[i]);
         free(g_outputDataBuffers);
