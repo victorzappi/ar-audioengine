@@ -41,8 +41,10 @@ obj/
 .DS_Store
 Thumbs.db
 
-# Temporary local folders
-/_*/
+# Temporary local folders (a trailing slash would only match real
+# directories, not symlinks -- some of these, like _dafx26_projects,
+# are symlinks into an unrelated repo)
+/_*
 
 # neural models that need author's permission
 *.nam
