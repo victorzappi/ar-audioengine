@@ -53,6 +53,20 @@ enum { DIR_PLAYBACK = 0, DIR_CAPTURE = 1, NUM_DIRS = 2 };
 // one period of slack to render and write each block
 #define PLAYBACK_PRIME_PERIODS 2
 
+// ===========================================================================
+// MMAP MODE: PLAYBACK ONLY FOR NOW. FULL DUPLEX IS NOT RELIABLE YET
+//
+// the AGM tinyalsa plugin doesn't implement pcm_link, so playback and capture
+// can't be started together: audio_loop starts them one after the other, and
+// the capture DSP starts a few ms after playback (3.3 ms between the two codec
+// DMAs, measured in RW mode on QLI 2.1). the app starts writing playback right
+// after the primed periods, so that delay comes straight out of the margin
+// between the DSP's read position and the app's write position. when the delay
+// is longer than one period, the loop starts with an underrun and then runs
+// with whatever margin is left. the capture MMAP path is also untested.
+// until this is solved, run MMAP mode with playback only (-u)
+// ===========================================================================
+
 // MMAP mode: between two reads of the position buffers, the audio thread sleeps
 // 1/MMAP_POLL_DIVIDER of a DSP block, or MMAP_POLL_DEFAULT_US until the block size
 // has been measured
