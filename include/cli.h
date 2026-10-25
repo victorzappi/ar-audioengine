@@ -45,6 +45,8 @@ struct settings {
     int cpu_affinity;              // CLI -m; unset (no affinity) by default -- see
                                    // CPU_AFFINITY_UNSET in cpu_perf.h
     bool force_performance_governor; // CLI -g; defaults off
+    bool mmap;                     // CLI -M; defaults off. both streams in MMAP mode: the
+                                   // engine reads/writes the DSP's ring buffers directly
     bool verbose;                  // CLI --verbose; defaults off (engine prints only
                                     // the startup banner; pass --verbose for full diagnostics)
 

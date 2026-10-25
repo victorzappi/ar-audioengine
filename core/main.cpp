@@ -25,6 +25,8 @@ configure, build and clean commands in CMakeLists.txt
 #include <string.h>
 #include <pthread.h>
 #include <sched.h>
+#include <unistd.h>
+#include <sys/mman.h>
 #include <atomic>
 
 #include "cli.h"
@@ -51,6 +53,23 @@ enum { DIR_PLAYBACK = 0, DIR_CAPTURE = 1, NUM_DIRS = 2 };
 // one period of slack to render and write each block
 #define PLAYBACK_PRIME_PERIODS 2
 
+// MMAP mode: between two reads of the position buffers, the audio thread sleeps
+// 1/MMAP_POLL_DIVIDER of a DSP block, or MMAP_POLL_DEFAULT_US until the block size
+// has been measured
+#define MMAP_POLL_DIVIDER 10
+#define MMAP_POLL_DEFAULT_US 100
+// tries to read a consistent position before giving up until the next poll
+#define MMAP_POS_RETRIES 8
+
+// layout of the DSP's position buffer (sh_mem_pull_push_mode_position_buffer_t in
+// AudioReach's sh_mem_pull_push_mode_api.h), rewritten by the DSP at every DSP block
+struct sh_mem_pos_buf {
+    volatile uint32_t frame_counter;     // +1 per update; 0 while the DSP is writing
+    volatile uint32_t index;             // DSP read (playback) / write (capture) offset in the ring, bytes
+    volatile uint32_t timestamp_us_lsw;
+    volatile uint32_t timestamp_us_msw;
+};
+
 struct pcm_ctx {
     struct pcm *pcm;
     unsigned int phys_bytes_per_sample;
@@ -60,6 +79,22 @@ struct pcm_ctx {
     unsigned int num_samples;
     float *audio_buffer;
     char *raw_buffer;
+
+    // MMAP mode only: the DSP's ring and position buffers mapped in this process,
+    // and how many frames the app and the DSP have moved through the ring so far
+    char *ring;
+    size_t ring_map_bytes;
+    struct sh_mem_pos_buf *pos_buf;
+    size_t pos_map_bytes;
+    unsigned int frame_bytes;
+    unsigned int ring_frames;
+    unsigned int ring_bytes;
+    uint64_t appl_frames;           // written (playback) or read (capture) by the app
+    uint64_t dsp_frames;            // read (playback) or written (capture) by the DSP
+    uint32_t last_counter;
+    uint32_t last_index;
+    unsigned int dsp_block_frames;  // measured from the position buffer; 0 until known
+    unsigned int xruns;
 };
 
 std::atomic_int should_stop(0);
@@ -296,6 +331,62 @@ void cleanup_ctx(struct pcm_ctx ctx[])
     }
 }
 
+// MMAP mode: map the DSP's ring and position buffers, which the AGM plugin got from
+// AGM when the pcm was opened. AGM's session id is the virtual device number. the
+// fds stay AGM's: they are not closed here
+static int map_mmap_buffers(struct pcm_ctx *ctx, struct pcm_stream *stream)
+{
+    struct agm_buf_info buf_info = {};
+
+    if (agm_session_get_buf_info(stream->virtual_device, &buf_info, DATA_BUF | POS_BUF)) {
+        fprintf(stderr, "failed to get the MMAP buffers of virtual device %u\n", stream->virtual_device);
+        return -1;
+    }
+
+    ctx->frame_bytes = pcm_frames_to_bytes(ctx->pcm, 1);
+    ctx->ring_frames = pcm_get_buffer_size(ctx->pcm);
+    ctx->ring_bytes = ctx->ring_frames * ctx->frame_bytes;
+    if ((unsigned int)buf_info.data_buf_size < ctx->ring_bytes) {
+        fprintf(stderr, "MMAP ring buffer is %d bytes, expected at least %u\n",
+                buf_info.data_buf_size, ctx->ring_bytes);
+        return -1;
+    }
+
+    void *ring = mmap(nullptr, buf_info.data_buf_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                      buf_info.data_buf_fd, 0);
+    if (ring == MAP_FAILED) {
+        fprintf(stderr, "failed to map the MMAP ring buffer: %s\n", strerror(errno));
+        return -1;
+    }
+    void *pos = mmap(nullptr, buf_info.pos_buf_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                     buf_info.pos_buf_fd, 0);
+    if (pos == MAP_FAILED) {
+        fprintf(stderr, "failed to map the MMAP position buffer: %s\n", strerror(errno));
+        munmap(ring, buf_info.data_buf_size);
+        return -1;
+    }
+
+    ctx->ring = (char *)ring;
+    ctx->ring_map_bytes = buf_info.data_buf_size;
+    ctx->pos_buf = (struct sh_mem_pos_buf *)pos;
+    ctx->pos_map_bytes = buf_info.pos_buf_size;
+
+    if (g_verbose)
+        printf("MMAP ring buffer: %u frames (%u bytes), position buffer: %d bytes\n",
+               ctx->ring_frames, ctx->ring_bytes, buf_info.pos_buf_size);
+    return 0;
+}
+
+static void unmap_mmap_buffers(struct pcm_ctx *ctx)
+{
+    if (ctx->ring != nullptr)
+        munmap(ctx->ring, ctx->ring_map_bytes);
+    if (ctx->pos_buf != nullptr)
+        munmap((void *)ctx->pos_buf, ctx->pos_map_bytes);
+    ctx->ring = nullptr;
+    ctx->pos_buf = nullptr;
+}
+
 static int init_pcm_dir(struct pcm_ctx* ctx, struct settings *settings, struct pcm_stream *stream)
 {
     // we cannot check the param ranges on the frontend, because it's a virtual pcm!
@@ -310,6 +401,12 @@ static int init_pcm_dir(struct pcm_ctx* ctx, struct settings *settings, struct p
         fprintf(stderr, "failed to open for pcm %u,%u. %s\n",
                 settings->virtual_card, stream->virtual_device,
                 pcm_get_error(ctx->pcm));
+        pcm_close(ctx->pcm);
+        ctx->pcm = nullptr;
+        return -1;
+    }
+
+    if ((stream->flags & PCM_MMAP) && map_mmap_buffers(ctx, stream) < 0) {
         pcm_close(ctx->pcm);
         ctx->pcm = nullptr;
         return -1;
@@ -346,6 +443,7 @@ void cleanup_pcm(struct pcm_ctx ctx[])
     if (g_verbose)
         printf("pcm_cleanup\n");
     for (int d = 0; d < NUM_DIRS; d++) {
+        unmap_mmap_buffers(&ctx[d]);
         if (ctx[d].pcm != nullptr) {
             pcm_close(ctx[d].pcm);
             ctx[d].pcm = nullptr;
@@ -429,6 +527,117 @@ static struct audio_ctx create_audio_ctx(struct pcm_ctx *pb, struct pcm_ctx *cap
     return actx;
 }
 
+// MMAP mode: read the DSP's position and advance dsp_frames. the fields are valid
+// only if frame_counter is non-zero and unchanged across the read. the buffers are
+// cache-coherent with the DSP on the QCS6490 (measured), so plain reads see its updates
+static void mmap_update_dsp_pos(struct pcm_ctx *ctx)
+{
+    uint32_t counter, index;
+
+    for (int retry = 0; ; retry++) {
+        counter = ctx->pos_buf->frame_counter;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        index = ctx->pos_buf->index;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (counter != 0 && counter == ctx->pos_buf->frame_counter)
+            break;
+        if (retry == MMAP_POS_RETRIES)
+            return;  // the DSP is mid-update: read again at the next poll
+    }
+    if (counter == ctx->last_counter)
+        return;
+
+    uint32_t blocks = counter - ctx->last_counter;
+    unsigned int frames = ((index + ctx->ring_bytes - ctx->last_index) % ctx->ring_bytes) / ctx->frame_bytes;
+    // the index wraps at every lap of the ring, so after a sleep of a lap or more
+    // only the block count tells how far the DSP went
+    if (ctx->dsp_block_frames == 0)
+        ctx->dsp_block_frames = frames / blocks;
+    else if (frames != blocks * ctx->dsp_block_frames)
+        frames = blocks * ctx->dsp_block_frames;
+
+    ctx->dsp_frames += frames;
+    ctx->last_counter = counter;
+    ctx->last_index = index;
+}
+
+// MMAP mode: sleep between two reads of the position buffer
+static void mmap_poll_sleep(const struct pcm_ctx *ctx, unsigned int rate)
+{
+    unsigned int us = MMAP_POLL_DEFAULT_US;
+    if (ctx->dsp_block_frames != 0)
+        us = (unsigned int)((uint64_t)ctx->dsp_block_frames * 1000000 / rate / MMAP_POLL_DIVIDER);
+    usleep(us > 0 ? us : 1);
+}
+
+// MMAP mode: wait until a whole period of the ring is free, i.e. already played by
+// the DSP, then copy raw_buffer into it. returns -1 if asked to stop while waiting
+static int mmap_write_period(struct pcm_ctx *ctx, const struct pcm_config *config)
+{
+    for (;;) {
+        mmap_update_dsp_pos(ctx);
+        if (ctx->dsp_frames > ctx->appl_frames) {
+            // underrun: the DSP played ring frames the app had not refilled.
+            // resume at the first period boundary the DSP has not reached yet
+            ctx->xruns++;
+            ctx->appl_frames = (ctx->dsp_frames / config->period_size + 1) * config->period_size;
+        }
+        if (ctx->appl_frames + config->period_size <= ctx->dsp_frames + ctx->ring_frames)
+            break;
+        if (should_stop.load())
+            return -1;
+        mmap_poll_sleep(ctx, config->rate);
+    }
+
+    // the ring holds a whole number of periods, so a period never wraps around its end
+    unsigned int offset = (unsigned int)(ctx->appl_frames % ctx->ring_frames) * ctx->frame_bytes;
+    memcpy(ctx->ring + offset, ctx->raw_buffer, config->period_size * ctx->frame_bytes);
+    ctx->appl_frames += config->period_size;
+    return 0;
+}
+
+// MMAP mode: wait until the DSP has recorded a whole period past what the app read,
+// then copy it into raw_buffer. returns -1 if asked to stop while waiting
+static int mmap_read_period(struct pcm_ctx *ctx, const struct pcm_config *config)
+{
+    for (;;) {
+        mmap_update_dsp_pos(ctx);
+        if (ctx->dsp_frames > ctx->appl_frames + ctx->ring_frames) {
+            // overrun: the DSP overwrote ring frames the app had not read.
+            // resume at the oldest period boundary still in the ring
+            ctx->xruns++;
+            ctx->appl_frames = ((ctx->dsp_frames - ctx->ring_frames) / config->period_size + 1) *
+                               config->period_size;
+        }
+        if (ctx->appl_frames + config->period_size <= ctx->dsp_frames)
+            break;
+        if (should_stop.load())
+            return -1;
+        mmap_poll_sleep(ctx, config->rate);
+    }
+
+    unsigned int offset = (unsigned int)(ctx->appl_frames % ctx->ring_frames) * ctx->frame_bytes;
+    memcpy(ctx->raw_buffer, ctx->ring + offset, config->period_size * ctx->frame_bytes);
+    ctx->appl_frames += config->period_size;
+    return 0;
+}
+
+// one period in or out of the pcm: pcm_readi/pcm_writei, or the DSP's ring buffers
+// in MMAP mode. < 0 on error, or (MMAP) when asked to stop while waiting
+static int read_period(struct pcm_ctx *ctx, const struct pcm_config *config, bool mmap)
+{
+    if (mmap)
+        return mmap_read_period(ctx, config);
+    return pcm_readi(ctx->pcm, ctx->raw_buffer, config->period_size);
+}
+
+static int write_period(struct pcm_ctx *ctx, const struct pcm_config *config, bool mmap)
+{
+    if (mmap)
+        return mmap_write_period(ctx, config);
+    return pcm_writei(ctx->pcm, ctx->raw_buffer, config->period_size);
+}
+
 // single combined real-time loop: capture read -> render -> playback write,
 // in lockstep. In playback-only mode the capture half is skipped.
 int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
@@ -484,7 +693,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     // prime playback with silence, so the DSP has data from its first frame on
     memset(pb->raw_buffer, 0, pb->num_samples * pb->phys_bytes_per_sample);
     for (int i = 0; i < PLAYBACK_PRIME_PERIODS; i++) {
-        if (pcm_writei(pb->pcm, pb->raw_buffer, pb_config->period_size) < 0) {
+        if (write_period(pb, pb_config, settings->mmap) < 0) {
             fprintf(stderr, "playback PCM priming error: %s\n", pcm_get_error(pb->pcm));
             cleanup(&actx, settings->user_argv);
             return -1;
@@ -522,8 +731,9 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     // actual audio loop
     while (!should_stop.load()) {
         if (cap) {
-            int read_frames = pcm_readi(cap->pcm, cap->raw_buffer, cap_config->period_size);
-            if (read_frames < 0) {
+            if (read_period(cap, cap_config, settings->mmap) < 0) {
+                if (should_stop.load())
+                    break;
                 fprintf(stderr, "error capturing sample. %s\n", pcm_get_error(cap->pcm));
                 ret = -3;
                 break;
@@ -542,8 +752,9 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         else
             fromFloatToRaw_float(pb);
 
-        int written_frames = pcm_writei(pb->pcm, pb->raw_buffer, pb_config->period_size);
-        if (written_frames < 0) {
+        if (write_period(pb, pb_config, settings->mmap) < 0) {
+            if (should_stop.load())
+                break;
             fprintf(stderr, "error playing sample. %s\n", pcm_get_error(pb->pcm));
             ret = -3;
             break;
@@ -561,6 +772,16 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         pcm_stop(cap->pcm);
     }
     pcm_stop(pb->pcm);
+
+    if (settings->mmap) {
+        if (pb->xruns)
+            fprintf(stderr, "MMAP playback underruns: %u\n", pb->xruns);
+        if (cap && cap->xruns)
+            fprintf(stderr, "MMAP capture overruns: %u\n", cap->xruns);
+        if (g_verbose)
+            printf("MMAP DSP block: %u frames, played by the DSP: %llu frames\n",
+                   pb->dsp_block_frames, (unsigned long long)pb->dsp_frames);
+    }
 
     return ret;
 }

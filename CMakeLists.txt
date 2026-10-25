@@ -186,6 +186,7 @@ target_link_libraries(ar_audioengine
     PRIVATE dependencies
     PRIVATE libraries
     PRIVATE tinyalsa expat pthread
+    PRIVATE agm  # agm_session_get_buf_info, for MMAP mode
 )
 #-------------------------------------------------------------------------
 
