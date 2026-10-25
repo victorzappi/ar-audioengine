@@ -106,10 +106,10 @@ static bool g_verbose = false;
 
 // hot-path sample conversion: defined at the very bottom of the file, forward
 // declared here because the audio loop (above) calls them
-void fromFloatToRaw_int(struct pcm_ctx *ctx);
-void fromFloatToRaw_float(struct pcm_ctx *ctx);
-void fromRawToFloat_int(struct pcm_ctx *ctx);
-void fromRawToFloat_float(struct pcm_ctx *ctx);
+void fromFloatToRaw_int(struct pcm_ctx *ctx, char *raw);
+void fromFloatToRaw_float(struct pcm_ctx *ctx, char *raw);
+void fromRawToFloat_int(struct pcm_ctx *ctx, const char *raw);
+void fromRawToFloat_float(struct pcm_ctx *ctx, const char *raw);
 
 // ---------------------------------------------------------------------------
 // device name resolution
@@ -571,8 +571,8 @@ static void mmap_poll_sleep(const struct pcm_ctx *ctx, unsigned int rate)
 }
 
 // MMAP mode: wait until a whole period of the ring is free, i.e. already played by
-// the DSP, then copy raw_buffer into it. returns -1 if asked to stop while waiting
-static int mmap_write_period(struct pcm_ctx *ctx, const struct pcm_config *config)
+// the DSP, and return that period's slot. nullptr if asked to stop while waiting
+static char *mmap_playback_slot(struct pcm_ctx *ctx, const struct pcm_config *config)
 {
     for (;;) {
         mmap_update_dsp_pos(ctx);
@@ -585,20 +585,17 @@ static int mmap_write_period(struct pcm_ctx *ctx, const struct pcm_config *confi
         if (ctx->appl_frames + config->period_size <= ctx->dsp_frames + ctx->ring_frames)
             break;
         if (should_stop.load())
-            return -1;
+            return nullptr;
         mmap_poll_sleep(ctx, config->rate);
     }
 
     // the ring holds a whole number of periods, so a period never wraps around its end
-    unsigned int offset = (unsigned int)(ctx->appl_frames % ctx->ring_frames) * ctx->frame_bytes;
-    memcpy(ctx->ring + offset, ctx->raw_buffer, config->period_size * ctx->frame_bytes);
-    ctx->appl_frames += config->period_size;
-    return 0;
+    return ctx->ring + (ctx->appl_frames % ctx->ring_frames) * ctx->frame_bytes;
 }
 
 // MMAP mode: wait until the DSP has recorded a whole period past what the app read,
-// then copy it into raw_buffer. returns -1 if asked to stop while waiting
-static int mmap_read_period(struct pcm_ctx *ctx, const struct pcm_config *config)
+// and return that period's slot. nullptr if asked to stop while waiting
+static const char *mmap_capture_slot(struct pcm_ctx *ctx, const struct pcm_config *config)
 {
     for (;;) {
         mmap_update_dsp_pos(ctx);
@@ -612,30 +609,46 @@ static int mmap_read_period(struct pcm_ctx *ctx, const struct pcm_config *config
         if (ctx->appl_frames + config->period_size <= ctx->dsp_frames)
             break;
         if (should_stop.load())
-            return -1;
+            return nullptr;
         mmap_poll_sleep(ctx, config->rate);
     }
 
-    unsigned int offset = (unsigned int)(ctx->appl_frames % ctx->ring_frames) * ctx->frame_bytes;
-    memcpy(ctx->raw_buffer, ctx->ring + offset, config->period_size * ctx->frame_bytes);
-    ctx->appl_frames += config->period_size;
-    return 0;
+    return ctx->ring + (ctx->appl_frames % ctx->ring_frames) * ctx->frame_bytes;
 }
 
-// one period in or out of the pcm: pcm_readi/pcm_writei, or the DSP's ring buffers
-// in MMAP mode. < 0 on error, or (MMAP) when asked to stop while waiting
-static int read_period(struct pcm_ctx *ctx, const struct pcm_config *config, bool mmap)
+// where the next playback period is converted to: raw_buffer, which pcm_writei sends
+// on in commit_playback_period, or in MMAP mode the period's slot in the ring.
+// nullptr if asked to stop while waiting for a free slot
+static char *playback_period(struct pcm_ctx *ctx, const struct pcm_config *config, bool mmap)
 {
-    if (mmap)
-        return mmap_read_period(ctx, config);
-    return pcm_readi(ctx->pcm, ctx->raw_buffer, config->period_size);
+    return mmap ? mmap_playback_slot(ctx, config) : ctx->raw_buffer;
 }
 
-static int write_period(struct pcm_ctx *ctx, const struct pcm_config *config, bool mmap)
+// hand the converted playback period to the DSP. < 0 on error
+static int commit_playback_period(struct pcm_ctx *ctx, const struct pcm_config *config, bool mmap)
 {
-    if (mmap)
-        return mmap_write_period(ctx, config);
+    if (mmap) {
+        ctx->appl_frames += config->period_size;
+        return 0;
+    }
     return pcm_writei(ctx->pcm, ctx->raw_buffer, config->period_size);
+}
+
+// the next captured period: read into raw_buffer, or in MMAP mode in place in the
+// ring until release_capture_period. nullptr on error, or when asked to stop (MMAP)
+static const char *capture_period(struct pcm_ctx *ctx, const struct pcm_config *config, bool mmap)
+{
+    if (mmap)
+        return mmap_capture_slot(ctx, config);
+    if (pcm_readi(ctx->pcm, ctx->raw_buffer, config->period_size) < 0)
+        return nullptr;
+    return ctx->raw_buffer;
+}
+
+static void release_capture_period(struct pcm_ctx *ctx, const struct pcm_config *config, bool mmap)
+{
+    if (mmap)
+        ctx->appl_frames += config->period_size;
 }
 
 // single combined real-time loop: capture read -> render -> playback write,
@@ -691,9 +704,11 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     }
 
     // prime playback with silence, so the DSP has data from its first frame on
-    memset(pb->raw_buffer, 0, pb->num_samples * pb->phys_bytes_per_sample);
     for (int i = 0; i < PLAYBACK_PRIME_PERIODS; i++) {
-        if (write_period(pb, pb_config, settings->mmap) < 0) {
+        char *out = playback_period(pb, pb_config, settings->mmap);
+        if (out != nullptr)
+            memset(out, 0, pb->num_samples * pb->phys_bytes_per_sample);
+        if (out == nullptr || commit_playback_period(pb, pb_config, settings->mmap) < 0) {
             fprintf(stderr, "playback PCM priming error: %s\n", pcm_get_error(pb->pcm));
             cleanup(&actx, settings->user_argv);
             return -1;
@@ -731,7 +746,8 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     // actual audio loop
     while (!should_stop.load()) {
         if (cap) {
-            if (read_period(cap, cap_config, settings->mmap) < 0) {
+            const char *in = capture_period(cap, cap_config, settings->mmap);
+            if (in == nullptr) {
                 if (should_stop.load())
                     break;
                 fprintf(stderr, "error capturing sample. %s\n", pcm_get_error(cap->pcm));
@@ -739,20 +755,25 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
                 break;
             }
             if (!cap->is_float)
-                fromRawToFloat_int(cap);
+                fromRawToFloat_int(cap, in);
             else
-                fromRawToFloat_float(cap);
+                fromRawToFloat_float(cap, in);
+            release_capture_period(cap, cap_config, settings->mmap);
         }
 
         // user API function
         render(&actx, settings->user_argv);
 
+        // in MMAP mode this waits for a free slot in the ring, converted into directly
+        char *out = playback_period(pb, pb_config, settings->mmap);
+        if (out == nullptr)
+            break;  // asked to stop while waiting
         if (!pb->is_float)
-            fromFloatToRaw_int(pb);
+            fromFloatToRaw_int(pb, out);
         else
-            fromFloatToRaw_float(pb);
+            fromFloatToRaw_float(pb, out);
 
-        if (write_period(pb, pb_config, settings->mmap) < 0) {
+        if (commit_playback_period(pb, pb_config, settings->mmap) < 0) {
             if (should_stop.load())
                 break;
             fprintf(stderr, "error playing sample. %s\n", pcm_get_error(pb->pcm));
@@ -948,81 +969,101 @@ int main(int argc, char **argv)
 // sample-format conversion (hot path)
 // ---------------------------------------------------------------------------
 
-void fromFloatToRaw_int(struct pcm_ctx *ctx)
+// float -> signed integer samples of type T, scaled to full scale with one extra step
+// on the negative side (asymmetric signed integer quantization). a plain typed loop,
+// so the compiler can vectorize it. out-of-range values wrap as before, through int32
+template <typename T>
+static void float_to_int(const float *in, T *out, unsigned int n, float max_value)
 {
-    unsigned char *sampleBytes = (unsigned char *)ctx->raw_buffer;
-    unsigned int asymmMaxVal;
-    for (unsigned int n=0; n<ctx->num_samples; n++) {
-        asymmMaxVal = ctx->max_value + (ctx->audio_buffer[n] < 0); // this takes care of asymmetric signed integer quantization [negative values have one extra step]
-        int res = asymmMaxVal * ctx->audio_buffer[n]; // get actual int sample out of normalized full scale float
+    // negatives scale by max_value + 1. adding the comparison as a number, not
+    // selecting with ?:, keeps the loop branch-free so GCC vectorizes it
+    for (unsigned int i = 0; i < n; i++)
+        out[i] = (T)(int32_t)(in[i] * (max_value + (float)(in[i] < 0.0f)));
+}
 
-        // CPU and PCM stream are both little-endian (see static_assert), so the
-        // low bytes_per_sample bytes of res are already the output bytes
-        memcpy(sampleBytes, &res, ctx->bytes_per_sample);
+// inverse of float_to_int: signed integer samples of type T -> normalized float
+template <typename T>
+static void int_to_float(const T *in, float *out, unsigned int n, float max_value)
+{
+    for (unsigned int i = 0; i < n; i++)
+        out[i] = (float)in[i] / max_value;
+}
 
-        sampleBytes += ctx->bytes_per_sample; // jump to next sample
+// audio_buffer -> integer samples in raw, which is raw_buffer or, in MMAP mode, the
+// period's slot in the ring
+void fromFloatToRaw_int(struct pcm_ctx *ctx, char *raw)
+{
+    const float max_value = (float)ctx->max_value;
+
+    switch (ctx->bytes_per_sample) {
+    case 1:
+        float_to_int(ctx->audio_buffer, (int8_t *)raw, ctx->num_samples, max_value);
+        break;
+    case 2:
+        float_to_int(ctx->audio_buffer, (int16_t *)raw, ctx->num_samples, max_value);
+        break;
+    case 4:
+        float_to_int(ctx->audio_buffer, (int32_t *)raw, ctx->num_samples, max_value);
+        break;
+    default: {
+        // packed formats (S24_3LE): byte by byte. CPU and PCM stream are both
+        // little-endian (see static_assert), so the low bytes_per_sample bytes of
+        // res are already the output bytes
+        unsigned char *sampleBytes = (unsigned char *)raw;
+        for (unsigned int n = 0; n < ctx->num_samples; n++) {
+            unsigned int asymmMaxVal = ctx->max_value + (ctx->audio_buffer[n] < 0);
+            int res = asymmMaxVal * ctx->audio_buffer[n];
+            memcpy(sampleBytes, &res, ctx->bytes_per_sample);
+            sampleBytes += ctx->bytes_per_sample;
+        }
+        break;
+    }
     }
     // clean up buffer for next period
     memset(ctx->audio_buffer, 0, ctx->num_samples*sizeof(float));
 }
 
-void fromFloatToRaw_float(struct pcm_ctx *ctx)
+void fromFloatToRaw_float(struct pcm_ctx *ctx, char *raw)
 {
-    union {
-        float f;
-        int i;
-    } fval;
-
-    unsigned char *sampleBytes = (unsigned char *)ctx->raw_buffer;
-
-    for (unsigned int n=0; n<ctx->num_samples; n++)
-    {
-        fval.f = ctx->audio_buffer[n]; // safe, cos float is at least 32 bits
-        int res = fval.i; // interpret as int
-
-        // CPU and PCM stream are both little-endian (see static_assert), so the
-        // low bytes_per_sample bytes of res are already the output bytes
-        memcpy(sampleBytes, &res, ctx->bytes_per_sample);
-
-        sampleBytes += ctx->bytes_per_sample; // jump to next sample
-    }
+    memcpy(raw, ctx->audio_buffer, ctx->num_samples * sizeof(float));
     // clean up buffer for next period
     memset(ctx->audio_buffer, 0, ctx->num_samples*sizeof(float));
 }
 
-// inverse of fromFloatToRaw_int: raw little-endian integer samples -> normalized float
-void fromRawToFloat_int(struct pcm_ctx *ctx)
+// inverse of fromFloatToRaw_int: integer samples in raw -> normalized float
+void fromRawToFloat_int(struct pcm_ctx *ctx, const char *raw)
 {
-    unsigned char *sampleBytes = (unsigned char *)ctx->raw_buffer;
-    const int shift = (int)(sizeof(int) - ctx->bytes_per_sample) * 8; // for sign extension
-    for (unsigned int n=0; n<ctx->num_samples; n++) {
-        int res = 0;
-        // CPU and PCM stream are both little-endian (see static_assert): the sample
-        // bytes land in the low end of res, then the arithmetic shift sign-extends
-        memcpy(&res, sampleBytes, ctx->bytes_per_sample);
-        res = (res << shift) >> shift;
-        ctx->audio_buffer[n] = (float)res / (float)ctx->max_value; // normalize to [-1, 1]
+    const float max_value = (float)ctx->max_value;
 
-        sampleBytes += ctx->bytes_per_sample; // jump to next sample
+    switch (ctx->bytes_per_sample) {
+    case 1:
+        int_to_float((const int8_t *)raw, ctx->audio_buffer, ctx->num_samples, max_value);
+        break;
+    case 2:
+        int_to_float((const int16_t *)raw, ctx->audio_buffer, ctx->num_samples, max_value);
+        break;
+    case 4:
+        int_to_float((const int32_t *)raw, ctx->audio_buffer, ctx->num_samples, max_value);
+        break;
+    default: {
+        // packed formats (S24_3LE): the sample bytes land in the low end of res
+        // (little-endian, see static_assert), then the arithmetic shift sign-extends
+        const unsigned char *sampleBytes = (const unsigned char *)raw;
+        const int shift = (int)(sizeof(int) - ctx->bytes_per_sample) * 8;
+        for (unsigned int n = 0; n < ctx->num_samples; n++) {
+            int res = 0;
+            memcpy(&res, sampleBytes, ctx->bytes_per_sample);
+            res = (res << shift) >> shift;
+            ctx->audio_buffer[n] = (float)res / max_value;
+            sampleBytes += ctx->bytes_per_sample;
+        }
+        break;
+    }
     }
 }
 
-// inverse of fromFloatToRaw_float: raw little-endian float samples -> float
-void fromRawToFloat_float(struct pcm_ctx *ctx)
+// inverse of fromFloatToRaw_float
+void fromRawToFloat_float(struct pcm_ctx *ctx, const char *raw)
 {
-    union {
-        float f;
-        int i;
-    } fval;
-
-    unsigned char *sampleBytes = (unsigned char *)ctx->raw_buffer;
-
-    for (unsigned int n=0; n<ctx->num_samples; n++) {
-        int res = 0;
-        memcpy(&res, sampleBytes, ctx->bytes_per_sample); // 4 bytes for float
-        fval.i = res;
-        ctx->audio_buffer[n] = fval.f;
-
-        sampleBytes += ctx->bytes_per_sample; // jump to next sample
-    }
+    memcpy(ctx->audio_buffer, raw, ctx->num_samples * sizeof(float));
 }
