@@ -34,6 +34,7 @@ configure, build and clean commands in CMakeLists.txt
 #include "hw_mixer.h"
 #include "agm_mixer.h"
 #include "cpu_perf.h"
+#include "evl_rt.h"
 #include "render.h"
 
 // we assume a little-endian CPU: sample conversion copies the host integer's low
@@ -74,6 +75,10 @@ enum { DIR_PLAYBACK = 0, DIR_CAPTURE = 1, NUM_DIRS = 2 };
 #define MMAP_POLL_DEFAULT_US 100
 // tries to read a consistent position before giving up until the next poll
 #define MMAP_POS_RETRIES 8
+// EVL route (--evl): the audio thread sleeps this long between two reads of the
+// position buffers, out-of-band. it wakes about 1 us late on CPU 7 (latmus), so it
+// reads the position about every 2 us
+#define EVL_POLL_SLEEP_US 1
 
 // layout of the DSP's position buffer (sh_mem_pull_push_mode_position_buffer_t in
 // AudioReach's sh_mem_pull_push_mode_api.h), rewritten by the DSP at every DSP block
@@ -117,6 +122,10 @@ std::atomic_int should_stop(0);
 // CLI parsing); error/warning fprintf(stderr, ...) output always prints regardless.
 // file-scope so sig_handler (fixed OS callback signature) can read it too.
 static bool g_verbose = false;
+
+// EVL route (--evl): set once in main(), after EVL has been found. file-scope so
+// the MMAP poll sleep can read it
+static bool g_evl = false;
 
 // hot-path sample conversion: defined at the very bottom of the file, forward
 // declared here because the audio loop (above) calls them
@@ -578,6 +587,11 @@ static void mmap_update_dsp_pos(struct pcm_ctx *ctx)
 // MMAP mode: sleep between two reads of the position buffer
 static void mmap_poll_sleep(const struct pcm_ctx *ctx, unsigned int rate)
 {
+    if (g_evl) {
+        evl_rt_usleep(EVL_POLL_SLEEP_US);
+        return;
+    }
+
     unsigned int us = MMAP_POLL_DEFAULT_US;
     if (ctx->dsp_block_frames != 0)
         us = (unsigned int)((uint64_t)ctx->dsp_block_frames * 1000000 / rate / MMAP_POLL_DIVIDER);
@@ -756,6 +770,10 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     // catch ctrl-c to shutdown cleanly
     signal(SIGINT, sig_handler);
 
+    // EVL route: the thread is still in-band here; its first poll sleep in the loop
+    // takes it out-of-band. switches back to in-band are counted from here on
+    long evl_isw_start = settings->evl ? evl_rt_inband_switches() : 0;
+
     //------------------------
     // actual audio loop
     while (!should_stop.load()) {
@@ -797,6 +815,9 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     }
     //------------------------
 
+    // read before anything below makes Linux calls
+    long evl_isw_end = settings->evl ? evl_rt_inband_switches() : 0;
+
     // user API function
     cleanup(&actx, settings->user_argv);
     // don't call pcm_drain(), it will seg-fault!
@@ -817,6 +838,13 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
             printf("MMAP DSP block: %u frames, played by the DSP: %llu frames\n",
                    pb->dsp_block_frames, (unsigned long long)pb->dsp_frames);
     }
+    if (settings->evl) {
+        if (evl_isw_start < 0 || evl_isw_end < 0)
+            fprintf(stderr, "EVL: could not read the audio thread's in-band switches\n");
+        else
+            printf("EVL: audio thread switched to in-band %ld times during the loop\n",
+                   evl_isw_end - evl_isw_start);
+    }
 
     return ret;
 }
@@ -824,12 +852,31 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
 struct audio_thread_arg {
     struct settings *settings;
     struct pcm_ctx *ctx;
+    int ret;  // < 0 if the thread could not run the audio loop
 };
 
 static void *audio_thread_func(void *arg)
 {
     struct audio_thread_arg *a = (struct audio_thread_arg *)arg;
+
+    // EVL route: attach before audio_loop, so that opening and starting the streams
+    // happens in-band, before the thread first goes out-of-band. SIGINT is blocked
+    // here so that the main thread handles it and this one is not pulled in-band
+    if (a->settings->evl) {
+        sigset_t sigint;
+        sigemptyset(&sigint);
+        sigaddset(&sigint, SIGINT);
+        pthread_sigmask(SIG_BLOCK, &sigint, nullptr);
+        if (evl_rt_attach() < 0) {
+            a->ret = -1;
+            return nullptr;
+        }
+    }
+
     audio_loop(a->settings, a->ctx);
+
+    if (a->settings->evl)
+        evl_rt_detach();
     return nullptr;
 }
 
@@ -838,7 +885,7 @@ int start_audio(struct settings *settings, struct pcm_ctx ctx[])
     pthread_t thread;
     pthread_attr_t attr;
     struct sched_param param;
-    struct audio_thread_arg arg = { settings, ctx };
+    struct audio_thread_arg arg = { settings, ctx, 0 };
     int cpu = settings->cpu_affinity;
 
     pthread_attr_init(&attr);
@@ -866,7 +913,7 @@ int start_audio(struct settings *settings, struct pcm_ctx ctx[])
     pthread_attr_destroy(&attr);
     pthread_join(thread, nullptr);
 
-    return 0;
+    return arg.ret;
 }
 
 // ---------------------------------------------------------------------------
@@ -893,6 +940,19 @@ int main(int argc, char **argv)
     set_hw_mixer_verbose(settings.verbose);
     set_agm_mixer_verbose(settings.verbose);
     set_cpu_perf_verbose(settings.verbose);
+
+    // EVL route: check for EVL before opening anything, so that --evl fails cleanly
+    // on boards without it
+    if (settings.evl) {
+        if (evl_rt_init() < 0) {
+            cleanup_settings(&settings);
+            return EXIT_FAILURE;
+        }
+        g_evl = true;
+        if (g_verbose)
+            printf("EVL route: the audio thread runs out-of-band, polling every %d us\n",
+                   EVL_POLL_SLEEP_US);
+    }
 
     if (validate_cpu_affinity(settings.cpu_affinity) < 0) {
         cleanup_settings(&settings);

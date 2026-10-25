@@ -47,6 +47,8 @@ struct settings {
     bool force_performance_governor; // CLI -g; defaults off
     bool mmap;                     // CLI -M; defaults off. both streams in MMAP mode: the
                                    // engine reads/writes the DSP's ring buffers directly
+    bool evl;                      // CLI --evl; defaults off. the audio thread runs out-of-band
+                                   // under EVL (Xenomai 4); needs mmap
     bool verbose;                  // CLI --verbose; defaults off (engine prints only
                                     // the startup banner; pass --verbose for full diagnostics)
 

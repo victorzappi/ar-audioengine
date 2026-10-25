@@ -13,6 +13,10 @@
 # __for debug build (-O0 -g):
 #   -DCMAKE_BUILD_TYPE=Debug
 #
+# __to compile in the EVL (Xenomai 4) route, selected at run time with --evl
+#   (needs the libevl headers; libevl itself is loaded at run time):
+#   -DEVL=ON
+#
 #_Build [bin in build]
 # cmake --build build
 #
@@ -69,6 +73,7 @@ set(CORE_SRCS
     core/hw_mixer.cpp
     core/agm_mixer.cpp
     core/cpu_perf.cpp
+    core/evl_rt.cpp
 )
 
 # pass project path as either relative to source dir or absolute
@@ -173,6 +178,20 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 else()
     target_compile_options(ar_audioengine PRIVATE -O3)
 endif()
+
+# EVL (Xenomai 4) route: compiled in on request. libevl is dlopen()ed only when
+# --evl is passed, so the binary still runs on boards without EVL
+option(EVL "Compile in the EVL (Xenomai 4) route, selected at run time with --evl" OFF)
+if(EVL)
+    include(CheckIncludeFileCXX)
+    check_include_file_cxx(evl/evl.h HAVE_EVL_H)
+    if(NOT HAVE_EVL_H)
+        message(FATAL_ERROR "EVL=ON but the libevl headers (evl/evl.h) were not found")
+    endif()
+    target_compile_definitions(ar_audioengine PRIVATE AR_EVL)
+    target_link_libraries(ar_audioengine PRIVATE ${CMAKE_DL_LIBS})
+endif()
+message(STATUS "EVL route (EVL):                  ${EVL}")
 #-------------------------------------------------------------------------
 
 

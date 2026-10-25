@@ -37,6 +37,7 @@ void init_settings(struct settings *settings)
     settings->cpu_affinity = CPU_AFFINITY_UNSET;
     settings->force_performance_governor = false;
     settings->mmap = false;
+    settings->evl = false;
     settings->verbose = false;
     settings->user_argv = nullptr;  // populated by parse_cli
 
@@ -163,6 +164,7 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-g | --performance-governor             Force every online CPU's scaling governor to 'performance' for the duration of the audio thread (default off)\n");
     fprintf(stderr, "-M | --mmap                            MMAP mode: read/write the DSP's shared ring buffers directly (needs Shared Memory Pull/Push Mode graphs; default off)\n");
     fprintf(stderr, "-h | --help                            Print this help and exit\n");
+    fprintf(stderr, "     --evl                              Run the audio thread out-of-band under EVL (Xenomai 4); needs -M and a build with -DEVL=ON (default off)\n");
     fprintf(stderr, "     --verbose                          Print engine diagnostics (device/graph setup, mixer ctls, CPU pinning...); default off, only the startup banner is printed\n");
     fprintf(stderr, "\nAny unrecognized options and trailing arguments are forwarded to the project\n");
     fprintf(stderr, "(as setup/render/cleanup's user_data, argv-style).\n");
@@ -235,6 +237,7 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         OPT_CAP_PERIOD_COUNT,
         OPT_CAP_RATE,
         OPT_VERBOSE,
+        OPT_EVL,
     };
 
     struct optparse opts;
@@ -289,6 +292,7 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         { "capture-period-count",    OPT_CAP_PERIOD_COUNT, OPTPARSE_REQUIRED },
         { "capture-rate",            OPT_CAP_RATE,         OPTPARSE_REQUIRED },
         { "verbose",                 OPT_VERBOSE,          OPTPARSE_NONE     },
+        { "evl",                     OPT_EVL,              OPTPARSE_NONE     },
         { 0, 0, OPTPARSE_NONE }
     };
 
@@ -365,6 +369,9 @@ int parse_cli(int argc, char **argv, struct settings *settings)
             return 1;
         case OPT_VERBOSE:
             settings->verbose = true;
+            break;
+        case OPT_EVL:
+            settings->evl = true;
             break;
 
         // ----- playback -----
@@ -628,6 +635,13 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         printf("Arguments not recognized by main, forwarded to the project: ");
         for (int i = 1; i < n_unrecognized; i++)
             printf("%s%s", unrecognized[i], (i < n_unrecognized - 1) ? ", " : "\n");
+    }
+
+    // the EVL route polls the DSP's ring buffers: RW mode makes Linux system calls
+    // every period
+    if (settings->evl && !settings->mmap) {
+        fprintf(stderr, "--evl needs MMAP mode (-M)\n");
+        return -1;
     }
 
     return 0;
