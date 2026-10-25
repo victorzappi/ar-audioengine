@@ -46,6 +46,11 @@ static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
 // stream directions; used to index the per-direction runtime context array
 enum { DIR_PLAYBACK = 0, DIR_CAPTURE = 1, NUM_DIRS = 2 };
 
+// periods of silence written to the playback pcm before it starts. with 2, the
+// combined capture->playback loop runs at its minimum latency of 2 periods, with
+// one period of slack to render and write each block
+#define PLAYBACK_PRIME_PERIODS 2
+
 struct pcm_ctx {
     struct pcm *pcm;
     unsigned int phys_bytes_per_sample;
@@ -446,6 +451,11 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         fprintf(stderr, "warning: capture/playback period sizes differ (%u vs %u); "
                         "the combined loop assumes they match\n",
                 cap_config->period_size, pb_config->period_size);
+    if (pb_config->period_count < PLAYBACK_PRIME_PERIODS) {
+        fprintf(stderr, "playback period count %u too small, the pcm is primed with %d periods\n",
+                pb_config->period_count, PLAYBACK_PRIME_PERIODS);
+        return -1;
+    }
 
     struct audio_ctx actx = create_audio_ctx(pb, cap);
 
@@ -458,14 +468,40 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         return -2;
     }
 
-    // start streams
-    if (cap && pcm_start(cap->pcm) < 0) {
-        fprintf(stderr, "capture PCM start error: %s (errno=%d)\n", pcm_get_error(cap->pcm), errno);
-        pcm_stop(pb->pcm);
+    // prepare both streams before starting either, so that pcm_start() does not
+    // prepare the capture graph in between the two starts
+    if (pcm_prepare(pb->pcm) < 0) {
+        fprintf(stderr, "playback PCM prepare error: %s\n", pcm_get_error(pb->pcm));
+        cleanup(&actx, settings->user_argv);
         return -1;
     }
+    if (cap && pcm_prepare(cap->pcm) < 0) {
+        fprintf(stderr, "capture PCM prepare error: %s\n", pcm_get_error(cap->pcm));
+        cleanup(&actx, settings->user_argv);
+        return -1;
+    }
+
+    // prime playback with silence, so the DSP has data from its first frame on
+    memset(pb->raw_buffer, 0, pb->num_samples * pb->phys_bytes_per_sample);
+    for (int i = 0; i < PLAYBACK_PRIME_PERIODS; i++) {
+        if (pcm_writei(pb->pcm, pb->raw_buffer, pb_config->period_size) < 0) {
+            fprintf(stderr, "playback PCM priming error: %s\n", pcm_get_error(pb->pcm));
+            cleanup(&actx, settings->user_argv);
+            return -1;
+        }
+    }
+
+    // start streams back to back, playback first. any delay before the capture
+    // start lowers latency and playback slack by the same amount
     if (pcm_start(pb->pcm) < 0) {
-        fprintf(stderr, "playback PCM start error: %s (errno=%d)\n", pcm_get_error(cap->pcm), errno);
+        fprintf(stderr, "playback PCM start error: %s (errno=%d)\n", pcm_get_error(pb->pcm), errno);
+        cleanup(&actx, settings->user_argv);
+        return -1;
+    }
+    if (cap && pcm_start(cap->pcm) < 0) {
+        fprintf(stderr, "capture PCM start error: %s (errno=%d)\n", pcm_get_error(cap->pcm), errno);
+        cleanup(&actx, settings->user_argv);
+        pcm_stop(pb->pcm);
         return -1;
     }
 

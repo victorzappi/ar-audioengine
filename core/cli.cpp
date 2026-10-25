@@ -6,6 +6,7 @@
 // command-line parsing and engine defaults, split out of main.cpp to keep the
 // entry point focused on orchestration.
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,11 +58,14 @@ void init_settings(struct settings *settings)
     playback->config.rate = 48000;
     playback->config.format = PCM_FORMAT_INVALID;  // derived from bits/is_float in init_ctx
 
-    // these can be left to default, because ARE does not support aumtomatic pcm start/stop
+    // these can be left to default, because ARE does not support aumtomatic pcm stop
     playback->config.silence_threshold = 0;
     playback->config.silence_size = 0;
     playback->config.stop_threshold = 0;
-    playback->config.start_threshold = 0;
+    // AGM can auto-start playback on start_threshold, but it compares it in bytes while
+    // tinyalsa passes frames (AudioReach/audioreach-graphmgr#128). a threshold that is
+    // never reached leaves the start to the explicit pcm_start() in audio_loop()
+    playback->config.start_threshold = INT_MAX;
 
     // we set these to load the graph for the default RB3 use case
     playback->stream_kv.key     = STREAMRX;
