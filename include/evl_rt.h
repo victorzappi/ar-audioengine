@@ -22,6 +22,10 @@ int evl_rt_init(void);
 // printed)
 int evl_rt_attach(void);
 
+// switch the attached thread out-of-band now, instead of at its next EVL call.
+// returns 0, or -1 on error
+int evl_rt_switch_oob(void);
+
 // sleep out-of-band: the attached thread does not switch to in-band (Linux)
 void evl_rt_usleep(unsigned int usecs);
 

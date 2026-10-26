@@ -24,6 +24,7 @@ static struct {
     decltype(&evl_init) init;
     decltype(&evl_attach_thread) attach_thread;
     decltype(&evl_set_schedattr) set_schedattr;
+    decltype(&evl_switch_oob) switch_oob;
     decltype(&evl_usleep) usleep;
     decltype(&evl_get_state) get_state;
     decltype(&evl_detach_self) detach_self;
@@ -42,11 +43,12 @@ int evl_rt_init(void)
     libevl.init = (decltype(libevl.init))dlsym(handle, "evl_init");
     libevl.attach_thread = (decltype(libevl.attach_thread))dlsym(handle, "evl_attach_thread");
     libevl.set_schedattr = (decltype(libevl.set_schedattr))dlsym(handle, "evl_set_schedattr");
+    libevl.switch_oob = (decltype(libevl.switch_oob))dlsym(handle, "evl_switch_oob");
     libevl.usleep = (decltype(libevl.usleep))dlsym(handle, "evl_usleep");
     libevl.get_state = (decltype(libevl.get_state))dlsym(handle, "evl_get_state");
     libevl.detach_self = (decltype(libevl.detach_self))dlsym(handle, "evl_detach_self");
-    if (!libevl.init || !libevl.attach_thread || !libevl.set_schedattr || !libevl.usleep ||
-        !libevl.get_state || !libevl.detach_self) {
+    if (!libevl.init || !libevl.attach_thread || !libevl.set_schedattr || !libevl.switch_oob ||
+        !libevl.usleep || !libevl.get_state || !libevl.detach_self) {
         fprintf(stderr, "EVL not available: %s lacks some functions\n", LIBEVL_SONAME);
         dlclose(handle);
         return -1;
@@ -88,6 +90,11 @@ int evl_rt_attach(void)
     return 0;
 }
 
+int evl_rt_switch_oob(void)
+{
+    return libevl.switch_oob() < 0 ? -1 : 0;
+}
+
 void evl_rt_usleep(unsigned int usecs)
 {
     libevl.usleep(usecs);
@@ -119,6 +126,11 @@ int evl_rt_init(void)
 }
 
 int evl_rt_attach(void)
+{
+    return -1;
+}
+
+int evl_rt_switch_oob(void)
 {
     return -1;
 }
