@@ -56,9 +56,12 @@ static void record(struct timing_stat *s, int64_t value_ns)
 void timing_update_seen(struct block_timing *t, int64_t now_ns, uint32_t counter,
                         uint32_t blocks, uint64_t dsp_us)
 {
-    record(&t->detect_delay, counter_now_ns() - (int64_t)dsp_us * 1000);
+    int64_t counter_ns = counter_now_ns();
 
+    // the first update may have happened before the thread started polling, so it
+    // says nothing about the detection delay
     if (t->seen_ns != 0) {
+        record(&t->detect_delay, counter_ns - (int64_t)dsp_us * 1000);
         if (blocks == 1) {
             int64_t cpu_ns = now_ns - t->seen_ns;
             int64_t dsp_ns = (int64_t)(dsp_us - t->seen_dsp_us) * 1000;

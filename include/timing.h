@@ -20,7 +20,7 @@
 // - detection delay: the CPU's arch timer counter (the SoC's 19.2 MHz counter) when
 //   the thread saw an update, minus the DSP's timestamp of it. if the DSP stamps its
 //   updates with the same counter, this is the delay from a DSP update to the thread
-//   seeing it
+//   seeing it. the first update is skipped: it may predate the polling
 // - work time: from seeing an update to having written the next block (render() and
 //   conversion)
 // - slack: from having written a block to seeing the update in which the DSP took
