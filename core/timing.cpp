@@ -13,15 +13,25 @@
 // detection jitter and detection delay -2000 .. 1999
 #define JITTER_HIST_OFFSET_US (-TIMING_HIST_BINS / 2)
 
-// the arm64 virtual counter, in ns: the CPU's view of the SoC's always-on counter,
-// read with no system call
-static inline int64_t counter_now_ns(void)
+// the arm64 virtual counter: the CPU's view of the SoC's always-on counter, read
+// with no system call
+static inline uint64_t counter_ticks(void)
 {
 #if defined(__aarch64__)
-    uint64_t cnt, frq;
+    uint64_t cnt;
     __asm__ volatile("isb\n\tmrs %0, cntvct_el0" : "=r"(cnt) : : "memory");
+    return cnt;
+#else
+    return 0;
+#endif
+}
+
+static uint64_t counter_frequency(void)
+{
+#if defined(__aarch64__)
+    uint64_t frq;
     __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frq));
-    return (int64_t)((unsigned __int128)cnt * 1000000000u / frq);
+    return frq;
 #else
     return 0;
 #endif
@@ -32,6 +42,7 @@ void timing_init(struct block_timing *t)
     memset(t, 0, sizeof(*t));
     t->detect_jitter.hist_offset_us = JITTER_HIST_OFFSET_US;
     t->detect_delay.hist_offset_us = JITTER_HIST_OFFSET_US;
+    t->counter_hz = counter_frequency();
 }
 
 static void record(struct timing_stat *s, int64_t value_ns)
@@ -56,36 +67,64 @@ static void record(struct timing_stat *s, int64_t value_ns)
 void timing_update_seen(struct block_timing *t, int64_t now_ns, uint32_t counter,
                         uint32_t blocks, uint64_t dsp_us)
 {
-    int64_t counter_ns = counter_now_ns();
+    uint64_t ticks = counter_ticks();
 
-    // the first update may have happened before the thread started polling, so it
-    // says nothing about the detection delay
-    if (t->seen_ns != 0) {
-        record(&t->detect_delay, counter_ns - (int64_t)dsp_us * 1000);
-        if (blocks == 1) {
-            int64_t cpu_ns = now_ns - t->seen_ns;
-            int64_t dsp_ns = (int64_t)(dsp_us - t->seen_dsp_us) * 1000;
-            record(&t->update_interval, cpu_ns);
-            record(&t->dsp_interval, dsp_ns);
-            record(&t->detect_jitter, cpu_ns - dsp_ns);
-        } else {
-            t->missed_updates += blocks - 1;
-        }
+    if (t->pending_count < TIMING_MAX_PENDING) {
+        struct timing_update *u = &t->pending[t->pending_count++];
+        u->seen_ns = now_ns;
+        u->counter_ticks = ticks;
+        u->dsp_us = dsp_us;
+        u->counter = counter;
+        u->blocks = blocks;
+    } else {
+        t->dropped_updates++;
     }
-
-    if (t->written_ns != 0 && (int32_t)(counter - t->taken_counter) >= 0) {
-        record(&t->slack, now_ns - t->written_ns);
-        t->written_ns = 0;
-    }
-
     t->seen_ns = now_ns;
-    t->seen_dsp_us = dsp_us;
     t->seen_counter = counter;
+}
+
+void timing_flush(struct block_timing *t)
+{
+    for (unsigned int i = 0; i < t->pending_count; i++) {
+        const struct timing_update *u = &t->pending[i];
+
+        // the first update may have happened before the thread started polling, so it
+        // says nothing about the detection delay
+        if (t->prev_ns != 0) {
+            if (t->counter_hz != 0) {
+                int64_t counter_ns =
+                    (int64_t)((unsigned __int128)u->counter_ticks * 1000000000u / t->counter_hz);
+                record(&t->detect_delay, counter_ns - (int64_t)u->dsp_us * 1000);
+            }
+            if (u->blocks == 1) {
+                int64_t cpu_ns = u->seen_ns - t->prev_ns;
+                int64_t dsp_ns = (int64_t)(u->dsp_us - t->prev_dsp_us) * 1000;
+                record(&t->update_interval, cpu_ns);
+                record(&t->dsp_interval, dsp_ns);
+                record(&t->detect_jitter, cpu_ns - dsp_ns);
+            } else {
+                t->missed_updates += u->blocks - 1;
+            }
+        }
+
+        if (t->written_ns != 0 && (int32_t)(u->counter - t->taken_counter) >= 0) {
+            record(&t->slack, u->seen_ns - t->written_ns);
+            t->written_ns = 0;
+        }
+
+        t->prev_ns = u->seen_ns;
+        t->prev_dsp_us = u->dsp_us;
+    }
+    t->pending_count = 0;
 }
 
 void timing_write_done(struct block_timing *t, int64_t now_ns, uint32_t counter_now,
                        uint32_t updates_ahead)
 {
+    // the updates seen before this block, including the one that may take the
+    // previous block
+    timing_flush(t);
+
     if (t->seen_ns == 0)
         return;
     record(&t->work, now_ns - t->seen_ns);
@@ -102,6 +141,12 @@ void timing_write_done(struct block_timing *t, int64_t now_ns, uint32_t counter_
         t->written_ns = now_ns;
         t->taken_counter = taken;
     }
+}
+
+void timing_steps(struct block_timing *t, int64_t render_ns, int64_t convert_ns)
+{
+    record(&t->render, render_ns);
+    record(&t->convert, convert_ns);
 }
 
 static void print_stat(const char *label, const struct timing_stat *s)
@@ -131,9 +176,14 @@ void timing_report(const struct block_timing *t, const char *name)
     print_stat("detection jitter", &t->detect_jitter);
     print_stat("detection delay", &t->detect_delay);
     print_stat("work time", &t->work);
+    print_stat("  render", &t->render);
+    print_stat("  conversion", &t->convert);
     print_stat("slack", &t->slack);
     printf("  missed updates: %llu, late writes: %llu\n",
            (unsigned long long)t->missed_updates, (unsigned long long)t->late_writes);
+    if (t->dropped_updates)
+        printf("  updates not recorded (more than %d between two blocks): %llu\n",
+               TIMING_MAX_PENDING, (unsigned long long)t->dropped_updates);
 
     char path[64];
     snprintf(path, sizeof(path), TIMING_HIST_FILE_FMT, name);
@@ -147,6 +197,8 @@ void timing_report(const struct block_timing *t, const char *name)
     write_hist(f, "detection jitter", &t->detect_jitter);
     write_hist(f, "detection delay", &t->detect_delay);
     write_hist(f, "work time", &t->work);
+    write_hist(f, "render", &t->render);
+    write_hist(f, "conversion", &t->convert);
     write_hist(f, "slack", &t->slack);
     fclose(f);
     printf("  histograms written to %s\n", path);

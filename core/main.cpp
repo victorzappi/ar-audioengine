@@ -843,7 +843,13 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         }
 
         // user API function
+#ifdef AR_TIMING
+        int64_t render_start_ns = timing_now_ns();
+#endif
         render(&actx, settings->user_argv);
+#ifdef AR_TIMING
+        int64_t render_end_ns = timing_now_ns();
+#endif
 
         // in MMAP mode this waits for the DSP to take the current block, unless done
         // above; the next one is converted directly into its slot in the ring
@@ -852,10 +858,16 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
             if (out == nullptr)
                 break;  // asked to stop while waiting
         }
+#ifdef AR_TIMING
+        int64_t convert_start_ns = timing_now_ns();
+#endif
         if (!pb->is_float)
             fromFloatToRaw_int(pb, out);
         else
             fromFloatToRaw_float(pb, out);
+#ifdef AR_TIMING
+        int64_t convert_end_ns = timing_now_ns();
+#endif
 
         if (commit_playback_period(pb, pb_config, settings->mmap) < 0) {
             if (should_stop.load())
@@ -865,9 +877,16 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
             break;
         }
 #ifdef AR_TIMING
-        if (settings->mmap && pb->dsp_block_frames != 0)
-            timing_write_done(&pb->timing, timing_now_ns(), pb->pos_buf->frame_counter,
+        if (settings->mmap && pb->dsp_block_frames != 0) {
+            // the clock first, so that the position read below is not in the work time
+            int64_t written_ns = timing_now_ns();
+            timing_write_done(&pb->timing, written_ns, pb->pos_buf->frame_counter,
                               (uint32_t)((pb->appl_frames - pb->dsp_frames) / pb->dsp_block_frames));
+            timing_steps(&pb->timing, render_end_ns - render_start_ns,
+                         convert_end_ns - convert_start_ns);
+            if (cap)
+                timing_flush(&cap->timing);
+        }
 #endif
     }
     //------------------------
