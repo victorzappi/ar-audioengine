@@ -17,6 +17,10 @@
 // - DSP interval: between the DSP's timestamps of two updates
 // - detection jitter: update interval minus DSP interval, i.e. how much the delay
 //   from a DSP update to the thread seeing it changed from one update to the next
+// - detection delay: the CPU's arch timer counter (the SoC's 19.2 MHz counter) when
+//   the thread saw an update, minus the DSP's timestamp of it. if the DSP stamps its
+//   updates with the same counter, this is the delay from a DSP update to the thread
+//   seeing it
 // - work time: from seeing an update to having written the next block (render() and
 //   conversion)
 // - slack: from having written a block to seeing the update in which the DSP took
@@ -39,7 +43,7 @@ struct timing_stat {
 };
 
 struct block_timing {
-    struct timing_stat update_interval, dsp_interval, detect_jitter, work, slack;
+    struct timing_stat update_interval, dsp_interval, detect_jitter, detect_delay, work, slack;
     uint64_t missed_updates;
     uint64_t late_writes;
     // last update seen

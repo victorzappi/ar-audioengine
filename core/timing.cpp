@@ -10,13 +10,28 @@
 #include <string.h>
 
 // histogram ranges, in us: intervals, work time and slack 0 .. 3999,
-// detection jitter -2000 .. 1999
+// detection jitter and detection delay -2000 .. 1999
 #define JITTER_HIST_OFFSET_US (-TIMING_HIST_BINS / 2)
+
+// the arm64 virtual counter, in ns: the CPU's view of the SoC's always-on counter,
+// read with no system call
+static inline int64_t counter_now_ns(void)
+{
+#if defined(__aarch64__)
+    uint64_t cnt, frq;
+    __asm__ volatile("isb\n\tmrs %0, cntvct_el0" : "=r"(cnt) : : "memory");
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frq));
+    return (int64_t)((unsigned __int128)cnt * 1000000000u / frq);
+#else
+    return 0;
+#endif
+}
 
 void timing_init(struct block_timing *t)
 {
     memset(t, 0, sizeof(*t));
     t->detect_jitter.hist_offset_us = JITTER_HIST_OFFSET_US;
+    t->detect_delay.hist_offset_us = JITTER_HIST_OFFSET_US;
 }
 
 static void record(struct timing_stat *s, int64_t value_ns)
@@ -41,6 +56,8 @@ static void record(struct timing_stat *s, int64_t value_ns)
 void timing_update_seen(struct block_timing *t, int64_t now_ns, uint32_t counter,
                         uint32_t blocks, uint64_t dsp_us)
 {
+    record(&t->detect_delay, counter_now_ns() - (int64_t)dsp_us * 1000);
+
     if (t->seen_ns != 0) {
         if (blocks == 1) {
             int64_t cpu_ns = now_ns - t->seen_ns;
@@ -109,6 +126,7 @@ void timing_report(const struct block_timing *t, const char *name)
     print_stat("update interval", &t->update_interval);
     print_stat("DSP interval", &t->dsp_interval);
     print_stat("detection jitter", &t->detect_jitter);
+    print_stat("detection delay", &t->detect_delay);
     print_stat("work time", &t->work);
     print_stat("slack", &t->slack);
     printf("  missed updates: %llu, late writes: %llu\n",
@@ -124,6 +142,7 @@ void timing_report(const struct block_timing *t, const char *name)
     write_hist(f, "update interval", &t->update_interval);
     write_hist(f, "DSP interval", &t->dsp_interval);
     write_hist(f, "detection jitter", &t->detect_jitter);
+    write_hist(f, "detection delay", &t->detect_delay);
     write_hist(f, "work time", &t->work);
     write_hist(f, "slack", &t->slack);
     fclose(f);
