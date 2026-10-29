@@ -66,7 +66,9 @@ namespace ar
             // Run one graph: inputBuffers[i] feeds input i (sized to
             // inputs(graphIdx)[i].numElements floats), outputBuffers[i] receives
             // output i (sized to outputs(graphIdx)[i].numElements floats). Buffers
-            // are float32. Returns false on failure.
+            // are always float32: inputs the model stores as scale/offset fixed point
+            // are quantized internally into a staging buffer allocated by load()
+            // (outputs must be float32 in the model). Returns false on failure.
             bool execute(uint32_t graphIdx,
                          const float *const *inputBuffers,
                          float *const *outputBuffers);

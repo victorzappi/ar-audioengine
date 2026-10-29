@@ -56,8 +56,17 @@ model.execute(0, inputBuffers, outputBuffers);   // float in -> float out
 ```
 
 The destructor releases the backend, context, model and libraries; there is no
-separate teardown call. `execute()` is fp32 zero-copy (the tensors point directly
-at your buffers) — suitable for the real-time audio thread.
+separate teardown call. Buffers are always float32, and `execute()` is suitable for
+the real-time audio thread:
+
+- **float32 tensors** are zero-copy (the tensors point directly at your buffers).
+- **Quantized inputs** (8/16-bit fixed point with a per-tensor scale/offset encoding)
+  are quantized inside `execute()` into a staging buffer allocated by `load()`, so
+  no allocation happens on the audio thread. Other encodings (per-axis, block, ...)
+  are rejected at `load()`.
+- **Outputs must be float32**; a model with fixed-point outputs fails `load()`. On
+  HTP v68 (QCS6490) this means quantizing with `--preserve_io_datatype output_0`, so
+  the graph keeps a fixed-point input and a float32 output.
 
 > A DLC (Deep Learning Container) is a Qualcomm file format containing a model
 > that can be loaded and run with the QNN SDK. See the

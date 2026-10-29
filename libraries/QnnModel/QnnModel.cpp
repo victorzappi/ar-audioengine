@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 
 #include "QnnInterface.h"
 #include "QnnTypes.h"
@@ -77,6 +78,10 @@ namespace ar
             Qnn_DataType_t tensorDataType(const Qnn_Tensor_t &t)
             {
                 return t.version == QNN_TENSOR_VERSION_1 ? t.v1.dataType : t.v2.dataType;
+            }
+            const Qnn_QuantizeParams_t &tensorQuantParams(const Qnn_Tensor_t &t)
+            {
+                return t.version == QNN_TENSOR_VERSION_1 ? t.v1.quantizeParams : t.v2.quantizeParams;
             }
             const char *tensorName(const Qnn_Tensor_t &t)
             {
@@ -149,6 +154,40 @@ namespace ar
                 }
             }
 
+            //helper function for setting range and size of quantized input based on datatype
+            bool fixedPointRange(Qnn_DataType_t dt, size_t &bytes, int32_t &qmin, int32_t &qmax)
+            {
+                switch(dt)
+                {
+                    case QNN_DATATYPE_UFIXED_POINT_8: bytes = 1; qmin = 0; qmax = 255; return true;
+                    case QNN_DATATYPE_SFIXED_POINT_8: bytes = 1; qmin = -128; qmax = 127; return true;
+                    case QNN_DATATYPE_UFIXED_POINT_16: bytes = 2; qmin = 0; qmax = 65535; return true;
+                    case QNN_DATATYPE_SFIXED_POINT_16: bytes = 2; qmin = -32768; qmax = 32767; return true;
+                    default: return false;
+                }
+            }
+
+            // structure for each input tensor to give us the quantization parameters
+            struct InputConvert {
+                bool quantized = false;
+                Qnn_DataType_t dtype = QNN_DATATYPE_FLOAT_32;
+                float invScale = 1.f;
+                int32_t offset = 0, qmin = 0, qmax = 0;
+                std::vector<uint8_t> staging; // numElements * bytes, sized in load()
+            };
+
+            // template for bitwidth agnostic quantization
+            template <typename T>
+            void quantize(const float *in, T *out, size_t n, const InputConvert &c)
+            {
+                for (size_t k = 0; k < n; ++k)
+                {
+                    long q = lrintf(in[k] * c.invScale) - c.offset;     // float -> nearest int, applying offset. q = float / scale - offset
+                    q = q < c.qmin ? c.qmin : (q > c.qmax ? c.qmax : q);       // clamp to quantization range
+                    out[k] = (T)q;                                      // type conversion after clamp 
+                }
+            }
+
             size_t productDims(const uint32_t *dims, uint32_t rank)
             {
                 size_t n = (rank == 0) ? 0 : 1;
@@ -217,6 +256,7 @@ namespace ar
             std::vector<std::vector<TensorInfo>> inInfos;
             std::vector<std::vector<TensorInfo>> outInfos;
             std::vector<std::vector<Qnn_Tensor_t>> inTensors;
+            std::vector<std::vector<InputConvert>> inConvert; // quantized input info
             std::vector<std::vector<Qnn_Tensor_t>> outTensors;
 
             bool loaded = false;
@@ -263,6 +303,7 @@ namespace ar
             inInfos.clear();
             outInfos.clear();
             inTensors.clear();
+            inConvert.clear();
             outTensors.clear();
             binaryBuffer.clear();
 
@@ -455,6 +496,7 @@ namespace ar
             p_->inInfos.resize(numGraphs);
             p_->outInfos.resize(numGraphs);
             p_->inTensors.resize(numGraphs);
+            p_->inConvert.resize(numGraphs);
             p_->outTensors.resize(numGraphs);
 
             for (uint32_t g = 0; g < numGraphs; ++g)
@@ -478,24 +520,76 @@ namespace ar
 
                 auto prepare = [&](Qnn_Tensor_t *src, uint32_t n,
                                    std::vector<TensorInfo> &infos,
-                                   std::vector<Qnn_Tensor_t> &clients) -> bool
+                                   std::vector<Qnn_Tensor_t> &clients,
+                                   std::vector<InputConvert> *conv) -> bool
                 {
                     infos.resize(n);
                     clients.resize(n);
+                    if (conv) conv->resize(n);
+
                     for (uint32_t i = 0; i < n; ++i)
                     {
-                        if (tensorDataType(src[i]) != QNN_DATATYPE_FLOAT_32)
-                        {
-                            logMsg("tensor '%s' has dtype %d; only FLOAT_32 is wired currently "
-                                   "(add a conversion path in QnnModel.cpp)",
-                                   tensorName(src[i]), (int)tensorDataType(src[i]));
-                            return false;
-                        }
+                        // move these up here because we need NumElements for the staging buffer
                         const uint32_t rank = tensorRank(src[i]);
                         const uint32_t *dims = tensorDims(src[i]);
                         infos[i].name = tensorName(src[i]);
                         infos[i].dims.assign(dims, dims + rank);
                         infos[i].numElements = productDims(dims, rank);
+
+                        if (tensorDataType(src[i]) == QNN_DATATYPE_FLOAT_32)
+                        {
+                            // if element is input and float32, it is not quantized
+                            if (conv != nullptr) {
+                                (*conv)[i].quantized = false;
+                            }
+                        }
+                        else {
+                            // if conv is null, it is output: output must be FLOAT32
+                            // TODO: compare speed of in-graph conversion to F32 on DSP to CPU
+                            if (conv == nullptr) {
+                                logMsg("output tensors must be FLOAT32! If you want other outputs, add validation");
+                                return false;
+                            }
+                            // otherwise, validate datatype
+                            else {
+                                // make conv assignments more readable
+                                InputConvert &c = (*conv)[i];
+                                size_t bytes; int32_t qMin; int32_t qMax;
+                                
+                                if (!fixedPointRange(tensorDataType(src[i]), bytes, qMin, qMax))
+                                {
+                                    logMsg("Input '%s': Unsupported input data type %d!", infos[i].name.c_str(), (int)tensorDataType(src[i]));
+                                    return false;
+                                }
+
+                                // get quantization parameters
+                                const Qnn_QuantizeParams_t &qp = tensorQuantParams(src[i]);
+                                if (qp.encodingDefinition != QNN_DEFINITION_DEFINED) {
+                                    logMsg("Input '%s': Encoding is not defined!", infos[i].name.c_str());
+                                    return false;
+                                }
+                                if (qp.quantizationEncoding != QNN_QUANTIZATION_ENCODING_SCALE_OFFSET) {
+                                    logMsg("Input '%s': Scale/offset encoding for is %d, need SCALE_OFFSET", infos[i].name.c_str(), (int)qp.quantizationEncoding);
+                                    return false;
+                                }
+
+                                if (qp.scaleOffsetEncoding.scale <= 0)
+                                {
+                                    logMsg("Input '%s': Scale must be > 0!", infos[i].name.c_str());
+                                    return false;
+                                }
+
+                                c.quantized = true;
+                                c.dtype = tensorDataType(src[i]);
+                                c.invScale = 1.0f / qp.scaleOffsetEncoding.scale;
+                                c.offset = qp.scaleOffsetEncoding.offset;
+                                c.qmin = qMin;
+                                c.qmax = qMax;
+                                c.staging.resize(infos[i].numElements * bytes);
+                                logMsg("input '%s': dtype %d scale=%g offset=%d qmin=%d qmax=%d", infos[i].name.c_str(), (int)c.dtype, qp.scaleOffsetEncoding.scale, c.offset, c.qmin, c.qmax);
+                            }
+
+                        }
 
                         // client tensor: shallow copy of the descriptor (shares the
                         // name/dimensions owned by the DLC graphs array or the system
@@ -507,9 +601,9 @@ namespace ar
                     return true;
                 };
 
-                if (!prepare(ins, nIn, p_->inInfos[g], p_->inTensors[g]))
+                if (!prepare(ins, nIn, p_->inInfos[g], p_->inTensors[g], &p_->inConvert[g]))
                     return false;
-                if (!prepare(outs, nOut, p_->outInfos[g], p_->outTensors[g]))
+                if (!prepare(outs, nOut, p_->outInfos[g], p_->outTensors[g], nullptr))
                     return false;
             }
 
@@ -543,13 +637,38 @@ namespace ar
             auto &inT = p_->inTensors[graphIdx];
             auto &outT = p_->outTensors[graphIdx];
             auto &inI = p_->inInfos[graphIdx];
+            auto &convert = p_->inConvert[graphIdx];
             auto &outI = p_->outInfos[graphIdx];
 
-            // fp32 zero-copy: point the client buffers straight at the caller's
-            // float arrays (QNN only reads inputs, so the const_cast is safe).
             for (size_t i = 0; i < inT.size(); ++i)
-                tensorSetRawBuffer(inT[i], const_cast<float *>(inputBuffers[i]),
-                                   (uint32_t)(inI[i].numElements * sizeof(float)));
+            {
+                InputConvert &c = convert[i];
+                if (!c.quantized) 
+                {
+                    // fp32 zero-copy: point the client buffers straight at the caller's
+                    // float arrays (QNN only reads inputs, so the const_cast is safe).
+
+                    tensorSetRawBuffer(inT[i], const_cast<float *>(inputBuffers[i]),
+                                       (uint32_t)(inI[i].numElements * sizeof(float)));
+                    continue;
+                }
+                const float *in = inputBuffers[i];
+                size_t n = inI[i].numElements;
+                void *buf = c.staging.data(); // staging sized in load() to numElements * bytes
+                
+                // match template to input layer buffer type
+                switch(c.dtype)
+                {
+                    case QNN_DATATYPE_UFIXED_POINT_8: quantize(in, (uint8_t *)buf, n, c);   break;
+                    case QNN_DATATYPE_SFIXED_POINT_8: quantize(in, (int8_t *)buf, n, c);    break;
+                    case QNN_DATATYPE_UFIXED_POINT_16: quantize(in, (uint16_t *)buf, n, c); break;
+                    case QNN_DATATYPE_SFIXED_POINT_16: quantize(in, (int16_t *)buf, n, c);  break;
+                    default: return false;
+                }
+                tensorSetRawBuffer(inT[i], buf, (uint32_t)c.staging.size());
+                
+
+            }
             for (size_t i = 0; i < outT.size(); ++i)
                 tensorSetRawBuffer(outT[i], outputBuffers[i],
                                    (uint32_t)(outI[i].numElements * sizeof(float)));
