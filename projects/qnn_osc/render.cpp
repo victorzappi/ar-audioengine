@@ -300,7 +300,7 @@ int setup(struct audio_ctx *ctx, void *user_data)
             g_dump.assign(g_maxPeriods * ctx->period_size, 0.0f);
     }
 
-    // warmup execution, because first execute has unusually high latency:
+    // warmup execution, because first execute on .bin files on GPU has unusually high latency:
     for (size_t frame = 0; frame < ctx->period_size; ++frame) {
         const size_t inputOffset = frame * 2; // 2 input features
         g_inputDataBuffers[g_inputIdx][inputOffset] = 0.0f;
