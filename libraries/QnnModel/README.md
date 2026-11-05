@@ -86,3 +86,72 @@ model batch size, e.g.:
   --qnn-backend /path/to/libQnnCpu.so \
   --qnn-system  /path/to/libQnnSystem.so
 ```
+
+## Running on the HTP (NPU)
+
+The HTP backend is split between the CPU and the DSP, so it needs more files on
+the device than the CPU backend. Copy them into a single directory (e.g.
+`/root/dev/qnn`), all from the **same SDK release**: the CPU-side stub and the
+DSP-side skel must match exactly. For the QCS6490 (Hexagon v68):
+
+| File | From `$QNN_SDK_ROOT/lib/...` | Runs on |
+|---|---|---|
+| `libQnnHtp.so`, `libQnnSystem.so` | `aarch64-oe-linux-gcc11.2/` | CPU |
+| `libQnnHtpV68Stub.so` | `aarch64-oe-linux-gcc11.2/` | CPU |
+| `libQnnHtpPrepare.so` (only for `.dlc`) | `aarch64-oe-linux-gcc11.2/` | CPU |
+| `libQnnHtpV68Skel.so`, `libQnnHtpV68.so` | `hexagon-v68/unsigned/` | DSP |
+
+Then set two environment variables in the shell you run from.
+[`projects/qnn_osc/htp_env.sh`](../../projects/qnn_osc/htp_env.sh) does this for
+you:
+
+```sh
+export LD_LIBRARY_PATH=/root/dev/qnn
+export ADSP_LIBRARY_PATH="/root/dev/qnn;/usr/lib/dsp/cdsp;/usr/lib/rfsa/adsp;/dsp"
+```
+
+Copy it to the device once, then **source** it in each new shell before
+running:
+
+```sh
+adb push projects/qnn_osc/htp_env.sh /root/dev/   # once, from the host
+adb shell
+cd /root/dev
+source htp_env.sh                                 # or: . htp_env.sh
+```
+
+`QnnModel` opens the backend and system libraries by the full paths you pass, but
+those libraries then load their helpers **by name only**, and each variable
+tells a loader where to search:
+
+- **`LD_LIBRARY_PATH`** (colon-separated) is read by the Linux dynamic loader.
+  `libQnnHtp.so` loads `libQnnHtpV68Stub.so` and `libQnnHtpPrepare.so` by name,
+  and these aren't in the system library directories.
+- **`ADSP_LIBRARY_PATH`** (semicolon-separated) is read by FastRPC, the library
+  that loads code onto the DSP. The stub asks the DSP to load the skel, and
+  FastRPC, running in your process, finds that file in these directories and
+  sends it to the DSP. Setting the variable **replaces** FastRPC's default
+  search list, so the system DSP directories are listed again after yours.
+
+Both variables only affect programs started from that shell after the `export`,
+and they don't persist across logins, which is why `htp_env.sh` has to be
+sourced again in every new `adb shell`. If the skel can't be found, the failure shows up at
+`load()` as a FastRPC or device-creation error that doesn't mention the missing
+file. Check `ADSP_LIBRARY_PATH` first, including its spelling.
+
+```
+./ar_audioengine -p 256 \
+  --qnn-model   /path/to/model.bin \
+  --qnn-backend /root/dev/qnn/libQnnHtp.so \
+  --qnn-system  /root/dev/qnn/libQnnSystem.so
+```
+
+Notes:
+
+- A context binary (`.bin`) loads faster than a `.dlc` and doesn't need
+  `libQnnHtpPrepare.so`. Generate it for the target SoC
+  (`qnn-context-binary-generator` with a config naming the `soc_model` and `dsp_arch`).
+- HTP v68 has no FP16, so a model with a **float32 input fails** on it.
+  Quantize with a fixed-point input and a float32 output (see above).
+- `<E> unexpected GraphHtpSettings option 66` is logged on every HTP run and is
+  harmless.
