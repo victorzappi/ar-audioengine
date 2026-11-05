@@ -15,11 +15,14 @@
 // baked in at export time; pick the one whose batch size matches the
 // engine's --period-size.
 
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
 #include <math.h>
+#include <time.h>
+#include <cstdint>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -58,6 +61,25 @@ float amplitude = 0.8;
 float phase = 0.0;
 float phase_inc;
 
+// Profiling (--profile / --dump). All buffers are allocated in setup(), so
+// render() only writes into them; stats and the dump are produced in cleanup().
+float profileSeconds = 0; // recording window; 0 = profiling off
+std::string dumpPath;
+const size_t g_warmupPeriods = 10; // excluded from the steady-state stats
+size_t g_maxPeriods = 0;
+size_t g_periodIdx = 0;
+std::vector<uint64_t> g_execNs;        // execute() duration per period
+std::vector<uint64_t> g_periodStartNs; // render() entry time per period
+std::vector<float> g_dump;             // model output, period after period
+double g_loadMs = 0;
+
+static uint64_t nowNs()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
 void showHelp()
 {
     std::cout
@@ -85,6 +107,12 @@ void showHelp()
         << "  --log-level        <1-5>    QNN log level: 1=ERROR, 2=WARN, 3=INFO,\n"
         << "                              4=VERBOSE, 5=DEBUG. Defaults to ERROR.\n"
         << "\n"
+        << "  --profile          <SEC>    Time load() and every execute() for the first SEC\n"
+        << "                              seconds; prints a stats line at exit.\n"
+        << "\n"
+        << "  --dump             <FILE>   Write the model output of the --profile window to\n"
+        << "                              FILE as raw float32 at exit. Requires --profile.\n"
+        << "\n"
         << "  --project-help              Show this help message.\n"
         << std::endl;
 }
@@ -101,6 +129,8 @@ void processCommandLine(char **argv)
         OPT_LOG_LEVEL,
         OPT_FREQ,
         OPT_AMP,
+        OPT_PROFILE,
+        OPT_DUMP,
         OPT_PROJECT_HELP,
     };
 
@@ -113,6 +143,8 @@ void processCommandLine(char **argv)
         {"log-level", OPT_LOG_LEVEL, OPTPARSE_REQUIRED},
         {"freq", OPT_FREQ, OPTPARSE_REQUIRED},
         {"amp", OPT_AMP, OPTPARSE_REQUIRED},
+        {"profile", OPT_PROFILE, OPTPARSE_REQUIRED},
+        {"dump", OPT_DUMP, OPTPARSE_REQUIRED},
         {"project-help", OPT_PROJECT_HELP, OPTPARSE_NONE},
         {0, 0, OPTPARSE_NONE}};
 
@@ -174,6 +206,16 @@ void processCommandLine(char **argv)
             }
             break;
         }
+        case OPT_PROFILE: {
+            if (sscanf(opts.optarg, "%f", &profileSeconds) != 1 || profileSeconds <= 0) {
+                fprintf(stderr, "failed parsing profile duration '%s'\n", opts.optarg);
+                std::exit(EXIT_FAILURE);
+            }
+            break;
+        }
+        case OPT_DUMP:
+            dumpPath = opts.optarg;
+            break;
         case OPT_PROJECT_HELP:
             showHelp();
             std::exit(EXIT_SUCCESS);
@@ -196,12 +238,18 @@ int setup(struct audio_ctx *ctx, void *user_data)
         std::cerr << "qnn_osc: --qnn-model, --qnn-backend and --qnn-system are all required\n";
         return EXIT_FAILURE;
     }
+    if (!dumpPath.empty() && profileSeconds <= 0) {
+        std::cerr << "qnn_osc: --dump requires --profile\n";
+        return EXIT_FAILURE;
+    }
 
     model.reset(new ar::qnn::QnnModel(backendPath, modelPath, systemLibraryPath));
+    const uint64_t loadStart = nowNs();
     if (!model->load(logLevel)) {
         std::cerr << "qnn_osc: failed to load model\n";
         return EXIT_FAILURE;
     }
+    g_loadMs = (nowNs() - loadStart) / 1e6;
 
     const std::vector<ar::qnn::TensorInfo> &inputs = model->inputs(g_graphIdx);
     const std::vector<ar::qnn::TensorInfo> &outputs = model->outputs(g_graphIdx);
@@ -244,11 +292,31 @@ int setup(struct audio_ctx *ctx, void *user_data)
 
     phase_inc = 2.0f * M_PI * frequency / (float)(ctx->sample_rate);
 
+    if (profileSeconds > 0) {
+        g_maxPeriods = (size_t)ceil(profileSeconds * ctx->sample_rate / ctx->period_size);
+        g_execNs.assign(g_maxPeriods, 0);
+        g_periodStartNs.assign(g_maxPeriods, 0);
+        if (!dumpPath.empty())
+            g_dump.assign(g_maxPeriods * ctx->period_size, 0.0f);
+    }
+
+    // warmup execution, because first execute has unusually high latency:
+    for (size_t frame = 0; frame < ctx->period_size; ++frame) {
+        const size_t inputOffset = frame * 2; // 2 input features
+        g_inputDataBuffers[g_inputIdx][inputOffset] = 0.0f;
+        g_inputDataBuffers[g_inputIdx][inputOffset + 1] = 0.0f;
+    }
+    const bool ok = model->execute(g_graphIdx, g_inputDataBuffers, g_outputDataBuffers);
+
     return EXIT_SUCCESS;
 }
 
 void render(struct audio_ctx *ctx, void *user_data)
 {
+    const bool recording = g_periodIdx < g_maxPeriods;
+    if (recording)
+        g_periodStartNs[g_periodIdx] = nowNs();
+
     // 1. write float inputs (amplitude, phase) into the input buffer, row-major:
     //    the last dimension (2 features) varies fastest.
     for (size_t frame = 0; frame < ctx->period_size; ++frame) {
@@ -260,7 +328,16 @@ void render(struct audio_ctx *ctx, void *user_data)
     }
 
     // 2. run the model
-    if (!model->execute(g_graphIdx, g_inputDataBuffers, g_outputDataBuffers))
+    const uint64_t execStart = recording ? nowNs() : 0;
+    const bool ok = model->execute(g_graphIdx, g_inputDataBuffers, g_outputDataBuffers);
+    if (recording) {
+        g_execNs[g_periodIdx] = nowNs() - execStart;
+        if (!g_dump.empty())
+            memcpy(&g_dump[g_periodIdx * ctx->period_size], g_outputDataBuffers[g_outputIdx],
+                   ctx->period_size * sizeof(float));
+        ++g_periodIdx;
+    }
+    if (!ok)
         return;
 
     // 3. write the model outputs to the audio buffer (same sample to every channel)
@@ -271,8 +348,61 @@ void render(struct audio_ctx *ctx, void *user_data)
     }
 }
 
+// Prints one "key=value" line (times in microseconds) so runs can be parsed by script.
+static void printProfile(struct audio_ctx *ctx)
+{
+    const size_t n = g_periodIdx;
+    const double budgetUs = 1e6 * ctx->period_size / ctx->sample_rate;
+    printf("[qnn_osc profile] model=%s backend=%s period=%u rate=%u load_ms=%.3f budget_us=%.1f periods=%zu",
+           modelPath.c_str(), backendPath.c_str(), ctx->period_size, ctx->sample_rate, g_loadMs, budgetUs, n);
+
+    if (n > 0) {
+        double warmMax = 0;
+        for (size_t i = 1; i < std::min(n, g_warmupPeriods + 1); ++i)
+            warmMax = std::max(warmMax, g_execNs[i] / 1e3);
+        printf(" first_us=%.1f warmup_max_us=%.1f", g_execNs[0] / 1e3, warmMax);
+    }
+
+    if (n > g_warmupPeriods + 1) {
+        std::vector<double> us;
+        size_t over50 = 0, over100 = 0;
+        double sum = 0, maxGapUs = 0;
+        for (size_t i = g_warmupPeriods + 1; i < n; ++i) {
+            const double t = g_execNs[i] / 1e3;
+            us.push_back(t);
+            sum += t;
+            over50 += t > 0.5 * budgetUs;
+            over100 += t > budgetUs;
+            maxGapUs = std::max(maxGapUs, (g_periodStartNs[i] - g_periodStartNs[i - 1]) / 1e3);
+        }
+        std::sort(us.begin(), us.end());
+        auto pct = [&](double p) { return us[(size_t)(p * (us.size() - 1))]; };
+        printf(" n=%zu min_us=%.1f mean_us=%.1f median_us=%.1f p99_us=%.1f p999_us=%.1f max_us=%.1f"
+               " over50=%zu over100=%zu max_gap_us=%.1f",
+               us.size(), us.front(), sum / us.size(), pct(0.5), pct(0.99), pct(0.999), us.back(),
+               over50, over100, maxGapUs);
+    }
+    printf("\n");
+
+    if (!g_dump.empty()) {
+        FILE *f = fopen(dumpPath.c_str(), "wb");
+        if (!f) {
+            fprintf(stderr, "qnn_osc: cannot open dump file '%s'\n", dumpPath.c_str());
+            return;
+        }
+        const size_t samples = n * ctx->period_size;
+        if (fwrite(g_dump.data(), sizeof(float), samples, f) != samples)
+            fprintf(stderr, "qnn_osc: short write to dump file '%s'\n", dumpPath.c_str());
+        fclose(f);
+        printf("[qnn_osc profile] dumped %zu samples to %s\n", samples, dumpPath.c_str());
+    }
+}
+
 void cleanup(struct audio_ctx *ctx, void *user_data)
 {
+    if (g_maxPeriods > 0)
+        printProfile(ctx);
+
     if (g_inputDataBuffers != nullptr) {
         for (size_t i = 0; i < g_numInputs; ++i)
             free(g_inputDataBuffers[i]);
