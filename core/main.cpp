@@ -59,9 +59,14 @@ enum { DIR_PLAYBACK = 0, DIR_CAPTURE = 1, NUM_DIRS = 2 };
 
 // MMAP mode: how many periods the app writes ahead of the DSP. with 1, render()
 // computes the next block while the DSP plays the current one: one period of
-// latency. playback is primed with this many periods of silence, and a period is
-// written only once the DSP has taken the one before it
+// latency. a period is written only once the DSP has taken the one before it
 #define MMAP_LEAD_PERIODS 1
+
+// MMAP mode: periods of silence in the ring before the start. the DSP takes 2 blocks
+// right at the start (seen from 125 us blocks down), so with 1 the loop began with an
+// underrun. the lead after the start is still MMAP_LEAD_PERIODS, so the latency
+// doesn't change
+#define MMAP_PRIME_PERIODS 2
 
 // ===========================================================================
 // MMAP MODE: PLAYBACK ONLY FOR NOW. FULL DUPLEX IS NOT RELIABLE YET
@@ -740,6 +745,78 @@ static void release_capture_period(struct pcm_ctx *ctx, const struct pcm_config 
 
 // single combined real-time loop: capture read -> render -> playback write,
 // in lockstep. In playback-only mode the capture half is skipped.
+// start the streams back to back, playback first, and enable the echo reference if
+// asked. any delay before the capture start lowers latency and playback slack by the
+// same amount. < 0 on error (playback is stopped again if capture fails to start)
+static int start_streams(struct settings *settings, struct pcm_ctx *pb, struct pcm_ctx *cap)
+{
+    if (pcm_start(pb->pcm) < 0) {
+        fprintf(stderr, "playback PCM start error: %s (errno=%d)\n", pcm_get_error(pb->pcm), errno);
+        return -1;
+    }
+    if (cap && pcm_start(cap->pcm) < 0) {
+        fprintf(stderr, "capture PCM start error: %s (errno=%d)\n", pcm_get_error(cap->pcm), errno);
+        pcm_stop(pb->pcm);
+        return -1;
+    }
+
+    if (cap && settings->echo_reference) {
+        if (g_verbose)
+            printf("Enabling echo reference path from playback to capture\n");
+        if (set_agm_ecref_path(settings->capture.frontend_name, settings->playback.backend_name, true)) {
+            if (g_verbose)
+                printf("Could not enable echo reference path\n");
+        }
+    }
+    return 0;
+}
+
+// MMAP mode: pcm_start() returns only once the speaker path is up, about 0.1 ms after
+// the DSP has begun taking blocks at its regular pace. until the loop watches the
+// position buffer, the DSP can only take the primed periods, and with blocks of 2-3
+// frames that is more than the ring holds. so a helper thread starts the streams while
+// the audio thread already waits in the loop
+struct start_streams_arg {
+    struct settings *settings;
+    struct pcm_ctx *pb;
+    struct pcm_ctx *cap;
+    int ret;
+};
+
+static void *start_streams_thread(void *arg)
+{
+    struct start_streams_arg *a = (struct start_streams_arg *)arg;
+
+    a->ret = start_streams(a->settings, a->pb, a->cap);
+    if (a->ret < 0)
+        should_stop = 1;  // the loop is waiting for the DSP: let it out
+    return nullptr;
+}
+
+// the helper is a normal thread on the CPUs other than the audio thread's: it inherits
+// neither the audio thread's SCHED_FIFO priority nor its CPU
+static int create_start_streams_thread(pthread_t *thread, struct start_streams_arg *arg, int audio_cpu)
+{
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
+    pthread_attr_setschedpolicy(&attr, SCHED_OTHER);
+    struct sched_param param = {};
+    pthread_attr_setschedparam(&attr, &param);
+    if (audio_cpu != CPU_AFFINITY_UNSET) {
+        cpu_set_t cpus;
+        CPU_ZERO(&cpus);
+        long num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+        for (long c = 0; c < num_cpus; c++)
+            if (c != audio_cpu)
+                CPU_SET(c, &cpus);
+        pthread_attr_setaffinity_np(&attr, sizeof(cpus), &cpus);
+    }
+    int rc = pthread_create(thread, &attr, start_streams_thread, arg);
+    pthread_attr_destroy(&attr);
+    return rc;
+}
+
 int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
 {
     int ret = 0;
@@ -760,7 +837,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         fprintf(stderr, "warning: capture/playback period sizes differ (%u vs %u); "
                         "the combined loop assumes they match\n",
                 cap_config->period_size, pb_config->period_size);
-    const int prime_periods = settings->mmap ? MMAP_LEAD_PERIODS : PLAYBACK_PRIME_PERIODS;
+    const int prime_periods = settings->mmap ? MMAP_PRIME_PERIODS : PLAYBACK_PRIME_PERIODS;
     if (pb_config->period_count < (unsigned int)prime_periods) {
         fprintf(stderr, "playback period count %u too small, the pcm is primed with %d periods\n",
                 pb_config->period_count, prime_periods);
@@ -797,8 +874,14 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         timing_init(&cap->timing);
 #endif
 
-    // prime playback with silence, so the DSP has data from its first frame on
-    for (int i = 0; i < prime_periods; i++) {
+    // prime playback with silence, so the DSP has data from its first frame on.
+    // MMAP mode writes the ring directly: playback_period() would wait for the DSP
+    // to take a period before handing out the slot past the lead
+    if (settings->mmap) {
+        memset(pb->ring, 0, (size_t)prime_periods * pb_config->period_size * pb->frame_bytes);
+        pb->appl_frames = (uint64_t)prime_periods * pb_config->period_size;
+    }
+    for (int i = 0; i < prime_periods && !settings->mmap; i++) {
         char *out = playback_period(pb, pb_config, settings->mmap);
         if (out != nullptr)
             memset(out, 0, pb->num_samples * pb->phys_bytes_per_sample);
@@ -809,27 +892,20 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         }
     }
 
-    // start streams back to back, playback first. any delay before the capture
-    // start lowers latency and playback slack by the same amount
-    if (pcm_start(pb->pcm) < 0) {
-        fprintf(stderr, "playback PCM start error: %s (errno=%d)\n", pcm_get_error(pb->pcm), errno);
-        cleanup(&actx, settings->user_argv);
-        return -1;
-    }
-    if (cap && pcm_start(cap->pcm) < 0) {
-        fprintf(stderr, "capture PCM start error: %s (errno=%d)\n", pcm_get_error(cap->pcm), errno);
-        cleanup(&actx, settings->user_argv);
-        pcm_stop(pb->pcm);
-        return -1;
-    }
-
-    if (cap && settings->echo_reference) {
-        if (g_verbose)
-            printf("Enabling echo reference path from playback to capture\n");
-        if (set_agm_ecref_path(settings->capture.frontend_name, settings->playback.backend_name, true)) {
-            if (g_verbose)
-                printf("Could not enable echo reference path\n");
+    // MMAP mode starts the streams from a helper thread, so the loop below already
+    // watches the DSP when it starts taking blocks (see start_streams_thread)
+    struct start_streams_arg start_arg = { settings, pb, cap, 0 };
+    pthread_t start_thread;
+    if (settings->mmap) {
+        if (create_start_streams_thread(&start_thread, &start_arg, settings->cpu_affinity) != 0) {
+            fprintf(stderr, "could not create the stream start thread\n");
+            cleanup(&actx, settings->user_argv);
+            return -1;
         }
+    }
+    else if (start_streams(settings, pb, cap) < 0) {
+        cleanup(&actx, settings->user_argv);
+        return -1;
     }
 
 
@@ -926,6 +1002,12 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
 
     // read before anything below makes Linux calls
     long evl_isw_end = settings->evl ? evl_rt_inband_switches() : 0;
+
+    if (settings->mmap) {
+        pthread_join(start_thread, nullptr);
+        if (start_arg.ret < 0)
+            ret = -1;
+    }
 
     // user API function
     cleanup(&actx, settings->user_argv);
