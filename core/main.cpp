@@ -123,6 +123,8 @@ struct pcm_ctx {
     uint32_t last_index;
     unsigned int dsp_block_frames;  // measured from the position buffer; 0 until known
     unsigned int xruns;
+    uint64_t first_xrun_dsp;        // dsp_frames and appl_frames at the first xrun
+    uint64_t first_xrun_appl;
 #ifdef AR_TIMING
     struct block_timing timing;     // -DTIMING=ON builds only
 #endif
@@ -441,6 +443,27 @@ static int init_pcm_dir(struct pcm_ctx* ctx, struct settings *settings, struct p
         return -1;
     }
 
+    // tinyalsa may round the period up to the plugin's minimum (the stock AGM plugin's
+    // 96-byte minimum means 48 frames), leaving the buffers out of step with the DSP
+    const struct pcm_config *open_config = pcm_get_config(ctx->pcm);
+    if (open_config->period_size != stream->config.period_size ||
+        open_config->period_count != stream->config.period_count)
+        fprintf(stderr, "warning: asked for %u x %u frames, the PCM opened with %u x %u (buffer %u)\n",
+                stream->config.period_size, stream->config.period_count,
+                open_config->period_size, open_config->period_count, pcm_get_buffer_size(ctx->pcm));
+
+    // AE_FRAME_US (environment): operating frame duration in us of the playback hardware
+    // endpoint, sent before prepare. needs ADSP firmware with PARAM_ID_HW_EP_FRAME_DURATION
+    // (custom Codec DMA build); AE_FRAME_NORM=1 lets it round to whole samples
+    const char *frame_us = getenv("AE_FRAME_US");
+    if (frame_us && !(stream->flags & PCM_IN) &&
+        configure_agm_hw_ep_frame_duration(stream->frontend_name, stream->backend_name,
+                                           (uint32_t)strtoul(frame_us, nullptr, 0)) != 0) {
+        pcm_close(ctx->pcm);
+        ctx->pcm = nullptr;
+        return -1;
+    }
+
     if ((stream->flags & PCM_MMAP) && map_mmap_buffers(ctx, stream) < 0) {
         pcm_close(ctx->pcm);
         ctx->pcm = nullptr;
@@ -567,6 +590,7 @@ static struct audio_ctx create_audio_ctx(struct pcm_ctx *pb, struct pcm_ctx *cap
 // cache-coherent with the DSP on the QCS6490 (measured), so plain reads see its updates
 static void mmap_update_dsp_pos(struct pcm_ctx *ctx)
 {
+    const unsigned int period_frames = pcm_get_config(ctx->pcm)->period_size;
     uint32_t counter, index;
 #ifdef AR_TIMING
     uint32_t ts_lsw, ts_msw;
@@ -597,8 +621,13 @@ static void mmap_update_dsp_pos(struct pcm_ctx *ctx)
     unsigned int frames = ((index + ctx->ring_bytes - ctx->last_index) % ctx->ring_bytes) / ctx->frame_bytes;
     // the index wraps at every lap of the ring, so after a sleep of a lap or more
     // only the block count tells how far the DSP went
+    // with a ring of 2 blocks a step of 2 or more blocks can wrap the index too, so
+    // the block is measured only from a single-block step; until then it is taken
+    // to be the period
+    if (ctx->dsp_block_frames == 0 && blocks == 1)
+        ctx->dsp_block_frames = frames;
     if (ctx->dsp_block_frames == 0)
-        ctx->dsp_block_frames = frames / blocks;
+        frames = blocks * period_frames;
     else if (frames != blocks * ctx->dsp_block_frames)
         frames = blocks * ctx->dsp_block_frames;
 
@@ -631,6 +660,10 @@ static char *mmap_playback_slot(struct pcm_ctx *ctx, const struct pcm_config *co
         if (ctx->dsp_frames > ctx->appl_frames) {
             // underrun: the DSP took ring frames the app had not written yet.
             // resume at the first period boundary the DSP has not reached yet
+            if (ctx->xruns == 0) {
+                ctx->first_xrun_dsp = ctx->dsp_frames;
+                ctx->first_xrun_appl = ctx->appl_frames;
+            }
             ctx->xruns++;
             ctx->appl_frames = (ctx->dsp_frames + config->period_size - 1) /
                                config->period_size * config->period_size;
@@ -907,7 +940,8 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
 
     if (settings->mmap) {
         if (pb->xruns)
-            fprintf(stderr, "MMAP playback underruns: %u\n", pb->xruns);
+            fprintf(stderr, "MMAP playback underruns: %u (first at DSP frame %llu, app frame %llu)\n",
+                    pb->xruns, (unsigned long long)pb->first_xrun_dsp, (unsigned long long)pb->first_xrun_appl);
         if (cap && cap->xruns)
             fprintf(stderr, "MMAP capture overruns: %u\n", cap->xruns);
         if (g_verbose)

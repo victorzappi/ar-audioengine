@@ -56,6 +56,8 @@ int configure_agm_modules(unsigned int physical_card, unsigned int physical_devi
 
 int inspect_agm_modules();
 
+int configure_agm_hw_ep_frame_duration(char *frontend_name, char *backend_name, uint32_t duration_us);
+
 int set_agm_ecref_path(char* cp_frontend_name, char* pb_backend_name, bool enable);
 
 void cleanup_agm_mixer(void);

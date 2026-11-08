@@ -54,6 +54,7 @@
 #define PARAM_ID_MFC_OUTPUT_MEDIA_FORMAT            0x08001024
 #define PARAM_ID_ALSA_DEVICE_INTF_CFG               0x08FFFFF3
 #define PARAM_ID_HW_EP_FRAME_SIZE_FACTOR            0x08001018
+#define PARAM_ID_HW_EP_FRAME_DURATION               0x08001B2F
 #define PARAM_ID_HW_EP_MF_CFG                       0x08001017
 
 //-------------------------------
@@ -148,6 +149,15 @@ struct param_id_alsa_device_intf_cfg_t
 struct param_id_hw_ep_frame_size_factor_t
 {
    int32_t frame_size_factor;
+}__attribute__((packed));
+
+/* Payload of the PARAM_ID_HW_EP_FRAME_DURATION parameter (upstream AudioReach layout). */
+struct param_id_hw_ep_frame_duration_t
+{
+    uint32_t frame_duration_in_us;
+    uint32_t allow_frame_duration_normalization;
+    uint32_t min_normalized_frame_dur_us;
+    uint32_t max_normalized_frame_dur_us;
 }__attribute__((packed));
 
 /* Payload of the PARAM_ID_HW_EP_MF_CFG parameter in the hardware endpoint/Sink Modules. */
@@ -1189,6 +1199,53 @@ int configure_agm_mfc(char *frontend_name, unsigned int rate, unsigned int chann
     ret = set_agm_param(frontend_name, (void *)payload, paddedSize);
 
     free(payload);
+    return ret;
+}
+
+// sets the operating frame duration (us) of the playback hardware endpoint
+// (module tagged DEVICE_HW_ENDPOINT_RX); needs firmware that supports
+// PARAM_ID_HW_EP_FRAME_DURATION
+int configure_agm_hw_ep_frame_duration(char *frontend_name, char *backend_name, uint32_t duration_us)
+{
+    uint32_t miid = 0, mid = 0;
+    struct apm_module_param_data_t *header = NULL;
+    struct param_id_hw_ep_frame_duration_t *frm_dur;
+    uint8_t *payload = NULL;
+    size_t payloadSize = 0, padBytes = 0, paramSize;
+    int ret;
+
+    if (get_agm_module_iid(frontend_name, backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) != 0) {
+        fprintf(stderr, "frame duration: no module tagged DEVICE_HW_ENDPOINT_RX\n");
+        return -1;
+    }
+
+    paramSize = sizeof(struct param_id_hw_ep_frame_duration_t);
+    payload = create_agm_param_payload(paramSize, &payloadSize, &padBytes);
+    if (!payload)
+        return -ENOMEM;
+
+    header = (struct apm_module_param_data_t *)payload;
+    header->module_instance_id = miid;
+    header->param_id = PARAM_ID_HW_EP_FRAME_DURATION;
+    header->error_code = 0x0;
+    header->param_size = paramSize;
+
+    frm_dur = (struct param_id_hw_ep_frame_duration_t *)(payload + sizeof(struct apm_module_param_data_t));
+    // AE_FRAME_NORM=1: let the firmware round to the nearest whole sample
+    // (e.g. 42 us -> 2 frames at 48 kHz), no limits on the rounded duration
+    const char *norm = getenv("AE_FRAME_NORM");
+    bool allow_norm = norm && atoi(norm) != 0;
+    frm_dur->frame_duration_in_us = duration_us;
+    frm_dur->allow_frame_duration_normalization = allow_norm ? 1 : 0;
+    frm_dur->min_normalized_frame_dur_us = allow_norm ? 0 : duration_us;
+    frm_dur->max_normalized_frame_dur_us = allow_norm ? 0 : duration_us;
+
+    ret = set_agm_param(frontend_name, (void *)payload, payloadSize + padBytes);
+    free(payload);
+
+    printf("frame duration: %u us%s -> module 0x%X (mid 0x%X): %s (%d)\n",
+           duration_us, allow_norm ? " (normalization allowed)" : "", miid, mid,
+           ret ? "FAILED" : "accepted", ret);
     return ret;
 }
 
