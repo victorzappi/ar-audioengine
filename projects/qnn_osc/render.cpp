@@ -65,6 +65,7 @@ float phase_inc;
 // render() only writes into them; stats and the dump are produced in cleanup().
 float profileSeconds = 0; // recording window; 0 = profiling off
 std::string dumpPath;
+std::string timesPath;
 const size_t g_warmupPeriods = 10; // excluded from the steady-state stats
 size_t g_maxPeriods = 0;
 size_t g_periodIdx = 0;
@@ -113,6 +114,10 @@ void showHelp()
         << "  --dump             <FILE>   Write the model output of the --profile window to\n"
         << "                              FILE as raw float32 at exit. Requires --profile.\n"
         << "\n"
+        << "  --times            <FILE>   Write every execute() duration of the --profile\n"
+        << "                              window to FILE as raw uint64 nanoseconds at exit.\n"
+        << "                              Requires --profile.\n"
+        << "\n"
         << "  --project-help              Show this help message.\n"
         << std::endl;
 }
@@ -131,6 +136,7 @@ void processCommandLine(char **argv)
         OPT_AMP,
         OPT_PROFILE,
         OPT_DUMP,
+        OPT_TIMES,
         OPT_PROJECT_HELP,
     };
 
@@ -145,6 +151,7 @@ void processCommandLine(char **argv)
         {"amp", OPT_AMP, OPTPARSE_REQUIRED},
         {"profile", OPT_PROFILE, OPTPARSE_REQUIRED},
         {"dump", OPT_DUMP, OPTPARSE_REQUIRED},
+        {"times", OPT_TIMES, OPTPARSE_REQUIRED},
         {"project-help", OPT_PROJECT_HELP, OPTPARSE_NONE},
         {0, 0, OPTPARSE_NONE}};
 
@@ -216,6 +223,9 @@ void processCommandLine(char **argv)
         case OPT_DUMP:
             dumpPath = opts.optarg;
             break;
+        case OPT_TIMES:
+            timesPath = opts.optarg;
+            break;
         case OPT_PROJECT_HELP:
             showHelp();
             std::exit(EXIT_SUCCESS);
@@ -238,8 +248,8 @@ int setup(struct audio_ctx *ctx, void *user_data)
         std::cerr << "qnn_osc: --qnn-model, --qnn-backend and --qnn-system are all required\n";
         return EXIT_FAILURE;
     }
-    if (!dumpPath.empty() && profileSeconds <= 0) {
-        std::cerr << "qnn_osc: --dump requires --profile\n";
+    if ((!dumpPath.empty() || !timesPath.empty()) && profileSeconds <= 0) {
+        std::cerr << "qnn_osc: --dump and --times require --profile\n";
         return EXIT_FAILURE;
     }
 
@@ -366,23 +376,38 @@ static void printProfile(struct audio_ctx *ctx)
     if (n > g_warmupPeriods + 1) {
         std::vector<double> us;
         size_t over50 = 0, over100 = 0;
-        double sum = 0, maxGapUs = 0;
+        double sum = 0, sumSq = 0, maxGapUs = 0;
         for (size_t i = g_warmupPeriods + 1; i < n; ++i) {
             const double t = g_execNs[i] / 1e3;
             us.push_back(t);
             sum += t;
+            sumSq += t * t;
             over50 += t > 0.5 * budgetUs;
             over100 += t > budgetUs;
             maxGapUs = std::max(maxGapUs, (g_periodStartNs[i] - g_periodStartNs[i - 1]) / 1e3);
         }
         std::sort(us.begin(), us.end());
         auto pct = [&](double p) { return us[(size_t)(p * (us.size() - 1))]; };
-        printf(" n=%zu min_us=%.1f mean_us=%.1f median_us=%.1f p99_us=%.1f p999_us=%.1f max_us=%.1f"
+        const double mean = sum / us.size();
+        const double std = sqrt(std::max(0.0, sumSq / us.size() - mean * mean));
+        printf(" n=%zu min_us=%.1f mean_us=%.1f std_us=%.1f median_us=%.1f p99_us=%.1f p999_us=%.1f max_us=%.1f"
                " over50=%zu over100=%zu max_gap_us=%.1f",
-               us.size(), us.front(), sum / us.size(), pct(0.5), pct(0.99), pct(0.999), us.back(),
+               us.size(), us.front(), mean, std, pct(0.5), pct(0.99), pct(0.999), us.back(),
                over50, over100, maxGapUs);
     }
     printf("\n");
+
+    // every period, warm-up included, so the analysis can choose what to drop
+    if (!timesPath.empty()) {
+        FILE *f = fopen(timesPath.c_str(), "wb");
+        if (!f) {
+            fprintf(stderr, "qnn_osc: cannot open times file '%s'\n", timesPath.c_str());
+        } else {
+            if (fwrite(g_execNs.data(), sizeof(uint64_t), n, f) != n)
+                fprintf(stderr, "qnn_osc: short write to times file '%s'\n", timesPath.c_str());
+            fclose(f);
+        }
+    }
 
     if (!g_dump.empty()) {
         FILE *f = fopen(dumpPath.c_str(), "wb");
