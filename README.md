@@ -238,6 +238,30 @@ Graph key values can be passed as strings (e.g., `SPEAKER` for playback,
 ./build/ar_audioengine -c 100 -d 100 -k CODEC_DMA-LPAIF_WSA-RX-0 -s 0 -e 0
 ```
 
+### Synchronized full-duplex start
+
+On this branch, `AE_SYNC_START=1` makes the DSP enable the playback and the capture
+Codec DMA interfaces together (within 1 us), when the second stream starts.
+`AE_START_STATUS=1` prints, at exit, when each interface was enabled and when its first
+DMA interrupt arrived.
+
+```bash
+AE_SYNC_START=1 AE_START_STATUS=1 ./build/ar_audioengine -s 0 -e 0 -E 1
+```
+
+This needs two changes outside this repository:
+
+- AGM that prepares the Codec DMA backends at `pcm_prepare()`: branch
+  [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare)
+  of audioreach-graphmgr.
+- An ADSP firmware whose Codec DMA module supports the sync-start parameter. It is
+  built from Qualcomm's proprietary ADSP sources and is not published.
+
+Without that firmware the engine reports that sync start is off and starts the two
+streams one after the other. Without that AGM, the interfaces still start together, but
+the capture codec powers up after the start, which shifts capture by about 0.5 ms.
+Tested so far in RW mode, not in MMAP mode.
+
 ## Writing a project
 
 Create a folder under `projects/` with at least a `render.cpp` file that implements the three callback functions declared in `render.h`:
