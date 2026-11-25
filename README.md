@@ -143,6 +143,18 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE="$OECORE_NATIVE_SYSROOT/usr/share/cmake/OE
 ./build/ar_audioengine [options]
 ```
 
+**Sound servers:** if the image runs PipeWire or PulseAudio, ar-audioengine works only
+while the sound server is stopped. Stop it before running the engine, including its
+socket, or the server starts again as soon as a client connects. With systemd user
+units, for example:
+
+```bash
+# PipeWire
+systemctl --user stop pipewire.socket pipewire-pulse.socket pipewire.service pipewire-pulse.service wireplumber.service
+# PulseAudio
+systemctl --user stop pulseaudio.socket pulseaudio.service
+```
+
 ### Options
 
 The engine runs full duplex (playback + capture) by default. Pass `-u` /
