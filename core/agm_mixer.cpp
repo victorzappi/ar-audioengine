@@ -56,6 +56,28 @@
 #define PARAM_ID_HW_EP_FRAME_SIZE_FACTOR            0x08001018
 #define PARAM_ID_HW_EP_FRAME_DURATION               0x08001B2F
 #define PARAM_ID_HW_EP_MF_CFG                       0x08001017
+// custom Codec DMA build only (non-Qualcomm IDs)
+#define PARAM_ID_CODEC_DMA_SYNC_START               0x18000101
+#define PARAM_ID_CODEC_DMA_START_STATUS             0x18000102
+
+/* Payload of PARAM_ID_CODEC_DMA_SYNC_START (custom Codec DMA build). */
+struct param_id_codec_dma_sync_start_t {
+    uint32_t group_id;
+    uint32_t num_members;
+};
+
+/* Payload of PARAM_ID_CODEC_DMA_START_STATUS (custom Codec DMA build, read only). */
+struct param_id_codec_dma_start_status_t {
+    uint32_t sync_group_id;
+    uint32_t intf_enable_ts_lsw;
+    uint32_t intf_enable_ts_msw;
+    uint32_t group_enable_spread_us;
+    uint32_t first_intr_ts_valid;
+    uint32_t first_intr_ts_lsw;
+    uint32_t first_intr_ts_msw;
+    uint32_t fifo_err_cnt;
+    uint32_t bus_err_cnt;
+};
 
 //-------------------------------
 // moved from agm_mixer.cpp
@@ -1368,6 +1390,98 @@ int configure_agm_hw_ep_block(char *frontend_name, char *backend_name, unsigned 
         printf("hardware endpoint block: %u frames = %u us%s (frame duration)\n",
                period_frames, duration_us, exact ? "" : ", rounded");
     return ret;
+}
+
+int set_agm_hw_ep_sync_start(char *frontend_name, char *backend_name, bool capture,
+                             uint32_t group_id, uint32_t num_members)
+{
+    int tag = capture ? DEVICE_HW_ENDPOINT_TX : DEVICE_HW_ENDPOINT_RX;
+    uint32_t miid = 0, mid = 0;
+    struct apm_module_param_data_t *header;
+    struct param_id_codec_dma_sync_start_t *cfg;
+    uint8_t *payload;
+    size_t payloadSize = 0, padBytes = 0;
+    int ret;
+
+    if (get_agm_module_iid(frontend_name, backend_name, tag, &miid, &mid) != 0) {
+        fprintf(stderr, "sync start: no module tagged %s\n", get_tag_name(tag));
+        return -1;
+    }
+
+    payload = create_agm_param_payload(sizeof(*cfg), &payloadSize, &padBytes);
+    if (!payload)
+        return -ENOMEM;
+
+    header = (struct apm_module_param_data_t *)payload;
+    header->module_instance_id = miid;
+    header->param_id = PARAM_ID_CODEC_DMA_SYNC_START;
+    header->error_code = 0x0;
+    header->param_size = sizeof(*cfg);
+
+    cfg = (struct param_id_codec_dma_sync_start_t *)(payload + sizeof(struct apm_module_param_data_t));
+    cfg->group_id = group_id;
+    cfg->num_members = num_members;
+
+    ret = set_agm_param(frontend_name, (void *)payload, payloadSize + padBytes);
+    free(payload);
+
+    if (ret != 0)
+        fprintf(stderr, "sync start: %s (module 0x%X) refused group %u (%d); needs the custom "
+                        "Codec DMA firmware\n", get_tag_name(tag), miid, group_id, ret);
+    else if (g_verbose)
+        printf("sync start: %s (module 0x%X) in group %u of %u\n",
+               get_tag_name(tag), miid, group_id, num_members);
+    return ret;
+}
+
+int get_agm_hw_ep_start_status(char *frontend_name, char *backend_name, bool capture,
+                               struct hw_ep_start_status *status)
+{
+    int tag = capture ? DEVICE_HW_ENDPOINT_TX : DEVICE_HW_ENDPOINT_RX;
+    uint32_t miid = 0, mid = 0;
+    struct apm_module_param_data_t *header;
+    struct param_id_codec_dma_start_status_t *st;
+    uint8_t *payload;
+    size_t payloadSize = 0, padBytes = 0;
+    int ret;
+
+    if (get_agm_module_iid(frontend_name, backend_name, tag, &miid, &mid) != 0) {
+        fprintf(stderr, "start status: no module tagged %s\n", get_tag_name(tag));
+        return -1;
+    }
+
+    payload = create_agm_param_payload(sizeof(*st), &payloadSize, &padBytes);
+    if (!payload)
+        return -ENOMEM;
+
+    header = (struct apm_module_param_data_t *)payload;
+    header->module_instance_id = miid;
+    header->param_id = PARAM_ID_CODEC_DMA_START_STATUS;
+    header->error_code = 0x0;
+    header->param_size = sizeof(*st);
+
+    ret = get_agm_param(frontend_name, (void *)payload, payloadSize + padBytes);
+    header = (struct apm_module_param_data_t *)payload;
+    if (ret == 0 && (header->error_code != 0 || header->param_size < sizeof(*st)))
+        ret = -EINVAL;
+    if (ret != 0) {
+        fprintf(stderr, "start status: %s (module 0x%X) did not answer (%d); needs the custom "
+                        "Codec DMA firmware\n", get_tag_name(tag), miid, ret);
+        free(payload);
+        return ret;
+    }
+
+    st = (struct param_id_codec_dma_start_status_t *)(payload + sizeof(struct apm_module_param_data_t));
+    status->sync_group_id = st->sync_group_id;
+    status->intf_enable_ts_us = ((uint64_t)st->intf_enable_ts_msw << 32) | st->intf_enable_ts_lsw;
+    status->group_enable_spread_us = st->group_enable_spread_us;
+    status->first_intr_ts_valid = st->first_intr_ts_valid != 0;
+    status->first_intr_ts_us = ((uint64_t)st->first_intr_ts_msw << 32) | st->first_intr_ts_lsw;
+    status->fifo_err_cnt = st->fifo_err_cnt;
+    status->bus_err_cnt = st->bus_err_cnt;
+
+    free(payload);
+    return 0;
 }
 
 int configure_agm_alsa_sink(char *frontend_name, unsigned int card_id, unsigned int device_id,

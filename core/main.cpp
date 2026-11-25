@@ -777,6 +777,44 @@ static int start_streams(struct settings *settings, struct pcm_ctx *pb, struct p
     return 0;
 }
 
+static void print_hw_ep_start_status(const char *name, const struct hw_ep_start_status *st)
+{
+    printf("start status: %-8s group %u, interface enabled at %llu us", name, st->sync_group_id,
+           (unsigned long long)st->intf_enable_ts_us);
+    if (st->sync_group_id)
+        printf(" (group writes took %u us)", st->group_enable_spread_us);
+    if (st->first_intr_ts_valid)
+        printf(", first DMA interrupt at %llu us", (unsigned long long)st->first_intr_ts_us);
+    else
+        printf(", first DMA interrupt not timestamped");
+    printf(", FIFO errors %u, bus errors %u\n", st->fifo_err_cnt, st->bus_err_cnt);
+}
+
+// prints the last start of the Codec DMA endpoints (custom Codec DMA build), and with
+// capture how far apart the two interfaces started
+static void report_hw_ep_start_status(struct settings *settings, bool full_duplex)
+{
+    struct hw_ep_start_status pb_st = {}, cap_st = {};
+
+    if (get_agm_hw_ep_start_status(settings->playback.frontend_name, settings->playback.backend_name,
+                                   false, &pb_st) != 0)
+        return;
+    print_hw_ep_start_status("playback", &pb_st);
+    if (!full_duplex)
+        return;
+    if (get_agm_hw_ep_start_status(settings->capture.frontend_name, settings->capture.backend_name,
+                                   true, &cap_st) != 0)
+        return;
+    print_hw_ep_start_status("capture", &cap_st);
+
+    printf("start status: capture - playback: interface enable %+lld us",
+           (long long)(cap_st.intf_enable_ts_us - pb_st.intf_enable_ts_us));
+    if (pb_st.first_intr_ts_valid && cap_st.first_intr_ts_valid)
+        printf(", first DMA interrupt %+lld us",
+               (long long)(cap_st.first_intr_ts_us - pb_st.first_intr_ts_us));
+    printf("\n");
+}
+
 // MMAP mode: pcm_start() returns only once the speaker path is up, about 0.1 ms after
 // the DSP has begun taking blocks at its regular pace. until the loop watches the
 // position buffer, the DSP can only take the primed periods, and with blocks of 2-3
@@ -895,6 +933,24 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
             fprintf(stderr, "playback PCM priming error: %s\n", pcm_get_error(pb->pcm));
             cleanup(&actx, settings->user_argv);
             return -1;
+        }
+    }
+
+    // AE_SYNC_START=1 (environment): start the two Codec DMA interfaces together (custom
+    // Codec DMA build). both endpoints join sync-start group 1 for this start only, and
+    // the DSP enables both interfaces when the second one starts
+    const char *sync_env = getenv("AE_SYNC_START");
+    if (cap && sync_env && atoi(sync_env) != 0) {
+        if (set_agm_hw_ep_sync_start(settings->playback.frontend_name, settings->playback.backend_name,
+                                     false, 1, 2) != 0) {
+            fprintf(stderr, "sync start: off, the streams start one after the other\n");
+        }
+        else if (set_agm_hw_ep_sync_start(settings->capture.frontend_name, settings->capture.backend_name,
+                                          true, 1, 2) != 0) {
+            // don't leave playback waiting for a capture endpoint that never joins
+            set_agm_hw_ep_sync_start(settings->playback.frontend_name, settings->playback.backend_name,
+                                     false, 0, 0);
+            fprintf(stderr, "sync start: off, the streams start one after the other\n");
         }
     }
 
@@ -1018,6 +1074,12 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     // user API function
     cleanup(&actx, settings->user_argv);
     // don't call pcm_drain(), it will seg-fault!
+
+    // AE_START_STATUS=1 (environment): how the Codec DMA interfaces started (custom Codec
+    // DMA build), read while the streams still run
+    const char *status_env = getenv("AE_START_STATUS");
+    if (status_env && atoi(status_env) != 0)
+        report_hw_ep_start_status(settings, cap != nullptr);
 
     if (cap) {
         if (settings->echo_reference)
