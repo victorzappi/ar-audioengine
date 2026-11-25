@@ -127,6 +127,7 @@ struct pcm_ctx {
     uint32_t last_counter;
     uint32_t last_index;
     unsigned int dsp_block_frames;  // measured from the position buffer; 0 until known
+    bool block_mismatch;            // the measured DSP block is not the period
     unsigned int xruns;
     uint64_t first_xrun_dsp;        // dsp_frames and appl_frames at the first xrun
     uint64_t first_xrun_appl;
@@ -457,13 +458,12 @@ static int init_pcm_dir(struct pcm_ctx* ctx, struct settings *settings, struct p
                 stream->config.period_size, stream->config.period_count,
                 open_config->period_size, open_config->period_count, pcm_get_buffer_size(ctx->pcm));
 
-    // AE_FRAME_US (environment): operating frame duration in us of the playback hardware
-    // endpoint, sent before prepare. needs ADSP firmware with PARAM_ID_HW_EP_FRAME_DURATION
-    // (custom Codec DMA build); AE_FRAME_NORM=1 lets it round to whole samples
-    const char *frame_us = getenv("AE_FRAME_US");
-    if (frame_us && !(stream->flags & PCM_IN) &&
-        configure_agm_hw_ep_frame_duration(stream->frontend_name, stream->backend_name,
-                                           (uint32_t)strtoul(frame_us, nullptr, 0)) != 0) {
+    // MMAP mode: the loop writes and the DSP takes whole periods of the ring, so the DSP
+    // block must be the period. set the playback hardware endpoint's block from it, before
+    // prepare (whole ms on any firmware, anything else needs the custom Codec DMA build)
+    if ((stream->flags & PCM_MMAP) && !(stream->flags & PCM_IN) &&
+        configure_agm_hw_ep_block(stream->frontend_name, stream->backend_name,
+                                  open_config->period_size, open_config->rate) != 0) {
         pcm_close(ctx->pcm);
         ctx->pcm = nullptr;
         return -1;
@@ -629,8 +629,14 @@ static void mmap_update_dsp_pos(struct pcm_ctx *ctx)
     // with a ring of 2 blocks a step of 2 or more blocks can wrap the index too, so
     // the block is measured only from a single-block step; until then it is taken
     // to be the period
-    if (ctx->dsp_block_frames == 0 && blocks == 1)
+    if (ctx->dsp_block_frames == 0 && blocks == 1) {
         ctx->dsp_block_frames = frames;
+        // the loop moves whole periods: with another DSP block it can only play wrongly
+        if (frames != period_frames) {
+            ctx->block_mismatch = true;
+            should_stop = 1;
+        }
+    }
     if (ctx->dsp_block_frames == 0)
         frames = blocks * period_frames;
     else if (frames != blocks * ctx->dsp_block_frames)
@@ -1021,6 +1027,12 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     pcm_stop(pb->pcm);
 
     if (settings->mmap) {
+        if (pb->block_mismatch || (cap && cap->block_mismatch)) {
+            struct pcm_ctx *bad = pb->block_mismatch ? pb : cap;
+            fprintf(stderr, "MMAP %s: the DSP block is %u frames, not the period (%u frames)\n",
+                    bad == pb ? "playback" : "capture", bad->dsp_block_frames, pb_config->period_size);
+            ret = -1;
+        }
         if (pb->xruns)
             fprintf(stderr, "MMAP playback underruns: %u (first at DSP frame %llu, app frame %llu)\n",
                     pb->xruns, (unsigned long long)pb->first_xrun_dsp, (unsigned long long)pb->first_xrun_appl);

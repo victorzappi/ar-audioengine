@@ -1202,22 +1202,17 @@ int configure_agm_mfc(char *frontend_name, unsigned int rate, unsigned int chann
     return ret;
 }
 
-// sets the operating frame duration (us) of the playback hardware endpoint
-// (module tagged DEVICE_HW_ENDPOINT_RX); needs firmware that supports
-// PARAM_ID_HW_EP_FRAME_DURATION
-int configure_agm_hw_ep_frame_duration(char *frontend_name, char *backend_name, uint32_t duration_us)
+// sends PARAM_ID_HW_EP_FRAME_DURATION (operating block in us) to the hardware endpoint
+// miid. allow_norm lets the firmware round the duration to whole samples. needs the
+// custom Codec DMA build
+static int send_agm_hw_ep_frame_duration(char *frontend_name, uint32_t miid, uint32_t duration_us,
+                                         bool allow_norm)
 {
-    uint32_t miid = 0, mid = 0;
     struct apm_module_param_data_t *header = NULL;
     struct param_id_hw_ep_frame_duration_t *frm_dur;
     uint8_t *payload = NULL;
     size_t payloadSize = 0, padBytes = 0, paramSize;
     int ret;
-
-    if (get_agm_module_iid(frontend_name, backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) != 0) {
-        fprintf(stderr, "frame duration: no module tagged DEVICE_HW_ENDPOINT_RX\n");
-        return -1;
-    }
 
     paramSize = sizeof(struct param_id_hw_ep_frame_duration_t);
     payload = create_agm_param_payload(paramSize, &payloadSize, &padBytes);
@@ -1230,22 +1225,16 @@ int configure_agm_hw_ep_frame_duration(char *frontend_name, char *backend_name, 
     header->error_code = 0x0;
     header->param_size = paramSize;
 
+    // with normalization the rounded duration must still be this one, so the firmware
+    // lands on the same number of samples
     frm_dur = (struct param_id_hw_ep_frame_duration_t *)(payload + sizeof(struct apm_module_param_data_t));
-    // AE_FRAME_NORM=1: let the firmware round to the nearest whole sample
-    // (e.g. 42 us -> 2 frames at 48 kHz), no limits on the rounded duration
-    const char *norm = getenv("AE_FRAME_NORM");
-    bool allow_norm = norm && atoi(norm) != 0;
     frm_dur->frame_duration_in_us = duration_us;
     frm_dur->allow_frame_duration_normalization = allow_norm ? 1 : 0;
-    frm_dur->min_normalized_frame_dur_us = allow_norm ? 0 : duration_us;
-    frm_dur->max_normalized_frame_dur_us = allow_norm ? 0 : duration_us;
+    frm_dur->min_normalized_frame_dur_us = duration_us;
+    frm_dur->max_normalized_frame_dur_us = duration_us;
 
     ret = set_agm_param(frontend_name, (void *)payload, payloadSize + padBytes);
     free(payload);
-
-    printf("frame duration: %u us%s -> module 0x%X (mid 0x%X): %s (%d)\n",
-           duration_us, allow_norm ? " (normalization allowed)" : "", miid, mid,
-           ret ? "FAILED" : "accepted", ret);
     return ret;
 }
 
@@ -1334,6 +1323,50 @@ int configure_agm_dma_sink(char *frontend_name, unsigned int frame_size_fcr, uin
 
     // free(payload);
 
+    return ret;
+}
+
+// sets the block of the playback hardware endpoint (module tagged DEVICE_HW_ENDPOINT_RX)
+// to period_frames. a block of whole ms goes as PARAM_ID_HW_EP_FRAME_SIZE_FACTOR, which
+// any Codec DMA firmware takes; any other block as PARAM_ID_HW_EP_FRAME_DURATION (us),
+// which needs the custom Codec DMA build. < 0 on error
+int configure_agm_hw_ep_block(char *frontend_name, char *backend_name, unsigned int period_frames,
+                              unsigned int rate)
+{
+    uint32_t miid = 0, mid = 0;
+    int ret;
+
+    if (get_agm_module_iid(frontend_name, backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) != 0) {
+        fprintf(stderr, "hardware endpoint block: no module tagged DEVICE_HW_ENDPOINT_RX\n");
+        return -1;
+    }
+
+    // whole ms, the way the Codec DMA driver counts them: (rate / 1000) * factor samples
+    unsigned int frames_per_ms = rate / 1000;
+    if (frames_per_ms != 0 && period_frames % frames_per_ms == 0 &&
+        period_frames / frames_per_ms >= 1 && period_frames / frames_per_ms <= 40) {
+        ret = configure_agm_dma_sink(frontend_name, period_frames / frames_per_ms, miid);
+        if (ret != 0)
+            fprintf(stderr, "hardware endpoint block: frame size factor %u refused (%d)\n",
+                    period_frames / frames_per_ms, ret);
+        else if (g_verbose)
+            printf("hardware endpoint block: %u frames = %u ms (frame size factor)\n",
+                   period_frames, period_frames / frames_per_ms);
+        return ret;
+    }
+
+    // anything else in us, to the nearest us; the firmware rounds it back to whole samples
+    uint64_t frames_us = (uint64_t)period_frames * 1000000;
+    uint32_t duration_us = (uint32_t)((frames_us + rate / 2) / rate);
+    bool exact = (frames_us % rate) == 0;
+    ret = send_agm_hw_ep_frame_duration(frontend_name, miid, duration_us, !exact);
+    if (ret != 0)
+        fprintf(stderr, "hardware endpoint block: a %u-frame block (%u us) was refused (%d); blocks "
+                        "that are not whole ms need the custom Codec DMA firmware\n",
+                period_frames, duration_us, ret);
+    else if (g_verbose)
+        printf("hardware endpoint block: %u frames = %u us%s (frame duration)\n",
+               period_frames, duration_us, exact ? "" : ", rounded");
     return ret;
 }
 
