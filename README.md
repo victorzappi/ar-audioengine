@@ -4,6 +4,23 @@ A C++ framework for building real-time audio applications on Linux embedded boar
 
 The developer writes a simple audio callback (`render()`), and the engine takes care of the rest — setting up the [AudioReach](https://audioreach.github.io/index.html) pipeline that streams audio from the CPU through the Qualcomm Hexagon DSP to the hardware codec.
 
+## Branches
+
+Each branch builds on the one above it, and needs more outside this repository. This is
+the **`main`** branch.
+
+| Branch | What it adds | QLI image | ADSP firmware | Also needs |
+|---|---|---|---|---|
+| `main` | The engine: `render()` once per period, audio read and written through AGM (RW mode) | QLI 1.8 or 2.1 (on 2.1: `-s 0 -e 0 -E 1`) | Stock | |
+| `mmap` | MMAP mode (`-M`): the engine reads and writes the DSP's shared ring buffers. Blocks shorter than 1 ms. EVL route (`--evl`) | QLI 2.1; the Xenomai (EVL) image for `--evl` | Custom: frame duration | An ACDB with Shared Memory Pull/Push Mode graphs (the QLI 2.1 ACDB has none). For periods under 48 frames, an AGM PCM plugin with a smaller minimum period |
+| `sync-start` | `mmap`, plus playback and capture Codec DMAs that start together | As `mmap` | Custom: frame duration, sync start | As `mmap`, plus the AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare) |
+| `cpu-buffer` | `sync-start`, plus the CPU-buffer route (`--cpu-buffer`): the engine reads and writes the Codec DMAs' own buffers, and the DSP does nothing per block | QLI 2.1 Xenomai (EVL) image | Custom: frame duration, sync start, CPU buffer | As `sync-start`, plus the `ar_lpass_map` kernel module (`kernel/ar_lpass_map`) |
+
+**Custom ADSP firmware:** built from Qualcomm's proprietary ADSP sources
+(ADSP.HT.5.5.c8-00256.2, `kodiak.adsp.prod`, for the QCS6490), with our changes to the
+Codec DMA module. It is not published. A firmware with more changes also runs the
+branches above it.
+
 ## How it works
 
 AudioReach is Qualcomm's signal processing framework for audio on Linux. It manages graphs of processing modules running on the Hexagon DSP and routes audio between the application processor (CPU) and the codec.
