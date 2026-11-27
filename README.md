@@ -314,6 +314,35 @@ frames, 8 of 9 runs had none, and one had 51,392 late and 7,346 skipped of 118,9
 not found). Without either `-g` or EVL, runs at 4 frames had up to 250 late periods in
 10 s.
 
+#### Round-trip latency
+
+Measured with the `latency_tester` project (`projects/latency_tester`): a pulse every
+second on the speakers, and the samples until the mic hears it. The RB3 Gen 2 has no
+line in or out, so a speaker faces the board's microphone (a TDK T5818 on the mainboard;
+the speaker outputs are on the interposer), about 1 cm away. Built with
+`-DPROJECT_PATH=projects/latency_tester`:
+
+```bash
+./build/ar_audioengine --evl -m 7 -g -p 2
+```
+
+With 2-frame blocks the round trip is **0.71 ms (34 samples)**, the same on every pulse:
+
+| Part | Samples | ms |
+|---|---|---|
+| Engine: 2 blocks of 2 frames | 4 | 0.08 |
+| Air, about 1 cm | about 1.4 | 0.03 |
+| Codecs, amplifier, speaker and mic | about 28.5 | about 0.6 |
+
+So the round trip is 2 blocks plus about 30 samples, most of it the converters and the
+transducers. An earlier run at 4-frame blocks, with the speaker about 9 cm from the mic,
+measured 51 samples: 8 for the engine, and 13 more of air.
+
+The tester prints the pulse's peak at the mic and the noise every second. Set
+`--threshold` (default 0.1) between the two: at 1 cm the peak was -9.6 dBFS and the noise
+-40.9 dBFS; with the speakers about 10 cm away the peak was only -25 dBFS, below the
+default threshold, and `--threshold 0.02` worked.
+
 ## Writing a project
 
 Create a folder under `projects/` with at least a `render.cpp` file that implements the three callback functions declared in `render.h`:
