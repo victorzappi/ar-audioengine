@@ -82,6 +82,32 @@ struct hw_ep_start_status {
 int get_agm_hw_ep_start_status(char *frontend_name, char *backend_name, bool capture,
                                struct hw_ep_start_status *status);
 
+// CPU-buffer mode of a Codec DMA endpoint (needs the custom Codec DMA build): the DSP
+// leaves the DMA's own buffer to the application processor and does nothing per block.
+// set before the start; applies to every later start until it is turned off. watermark:
+// the DMA FIFO watermark in 32-bit words, 0 for one frame (the firmware default). < 0 on
+// error
+int set_agm_hw_ep_cpu_buffer(char *frontend_name, char *backend_name, bool capture, bool enable,
+                             uint32_t watermark);
+
+// where a running endpoint's DMA buffer and DMA channel registers are (physical addresses
+// in LPASS), as the custom Codec DMA build reports them in CPU-buffer mode
+struct hw_ep_cpu_buffer {
+    bool active;                // the endpoint runs in CPU-buffer mode; the rest is valid only then
+    uint32_t buffer_addr;       // DMA buffer
+    uint32_t buffer_size;       // bytes, num_periods * period_size
+    uint32_t num_periods;       // 2: a double buffer
+    uint32_t period_size;       // bytes per period (one DSP block)
+    uint32_t bytes_per_sample;  // interleaved samples, 4: one 32-bit word, MSB-aligned
+    uint32_t num_channels;
+    uint32_t regs_addr;         // DMA channel registers; CURR_ADDR at +0x0C
+    uint32_t dma_type;
+    uint32_t dma_idx;
+    uint32_t watermark;         // DMA FIFO watermark, 32-bit words
+};
+int get_agm_hw_ep_cpu_buffer(char *frontend_name, char *backend_name, bool capture,
+                             struct hw_ep_cpu_buffer *info);
+
 void cleanup_agm_mixer(void);
 
 

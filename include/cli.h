@@ -49,6 +49,9 @@ struct settings {
                                    // engine reads/writes the DSP's ring buffers directly
     bool evl;                      // CLI --evl; defaults off. the audio thread runs out-of-band
                                    // under EVL (Xenomai 4); needs mmap
+    bool cpu_buffer;               // CLI --cpu-buffer; defaults off. the engine reads/writes the
+                                   // Codec DMA buffers directly, the DSP does nothing per block;
+                                   // needs mmap and full duplex
     bool verbose;                  // CLI --verbose; defaults off (engine prints only
                                     // the startup banner; pass --verbose for full diagnostics)
 

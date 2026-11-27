@@ -38,6 +38,7 @@ void init_settings(struct settings *settings)
     settings->force_performance_governor = false;
     settings->mmap = false;
     settings->evl = false;
+    settings->cpu_buffer = false;
     settings->verbose = false;
     settings->user_argv = nullptr;  // populated by parse_cli
 
@@ -165,6 +166,7 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-M | --mmap                            MMAP mode: read/write the DSP's shared ring buffers directly (needs Shared Memory Pull/Push Mode graphs; default off)\n");
     fprintf(stderr, "-h | --help                            Print this help and exit\n");
     fprintf(stderr, "     --evl                              Run the audio thread out-of-band under EVL (Xenomai 4); needs -M and a build with -DEVL=ON (default off)\n");
+    fprintf(stderr, "     --cpu-buffer                       CPU-buffer route: read/write the Codec DMA buffers directly, the DSP does nothing per block; needs -M, full duplex, the custom Codec DMA firmware and the ar_lpass_map module (default off)\n");
     fprintf(stderr, "     --verbose                          Print engine diagnostics (device/graph setup, mixer ctls, CPU pinning...); default off, only the startup banner is printed\n");
     fprintf(stderr, "\nAny unrecognized options and trailing arguments are forwarded to the project\n");
     fprintf(stderr, "(as setup/render/cleanup's user_data, argv-style).\n");
@@ -238,6 +240,7 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         OPT_CAP_RATE,
         OPT_VERBOSE,
         OPT_EVL,
+        OPT_CPU_BUFFER,
     };
 
     struct optparse opts;
@@ -293,6 +296,7 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         { "capture-rate",            OPT_CAP_RATE,         OPTPARSE_REQUIRED },
         { "verbose",                 OPT_VERBOSE,          OPTPARSE_NONE     },
         { "evl",                     OPT_EVL,              OPTPARSE_NONE     },
+        { "cpu-buffer",              OPT_CPU_BUFFER,       OPTPARSE_NONE     },
         { 0, 0, OPTPARSE_NONE }
     };
 
@@ -372,6 +376,9 @@ int parse_cli(int argc, char **argv, struct settings *settings)
             break;
         case OPT_EVL:
             settings->evl = true;
+            break;
+        case OPT_CPU_BUFFER:
+            settings->cpu_buffer = true;
             break;
 
         // ----- playback -----
@@ -641,6 +648,12 @@ int parse_cli(int argc, char **argv, struct settings *settings)
     // every period
     if (settings->evl && !settings->mmap) {
         fprintf(stderr, "--evl needs MMAP mode (-M)\n");
+        return -1;
+    }
+
+    // the CPU-buffer route opens the MMAP graphs, and the capture DMA paces the loop
+    if (settings->cpu_buffer && (!settings->mmap || !settings->full_duplex)) {
+        fprintf(stderr, "--cpu-buffer needs MMAP mode (-M) and full duplex (no -u)\n");
         return -1;
     }
 

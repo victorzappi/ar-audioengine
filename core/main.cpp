@@ -35,6 +35,7 @@ configure, build and clean commands in CMakeLists.txt
 #include "agm_mixer.h"
 #include "cpu_perf.h"
 #include "evl_rt.h"
+#include "cpu_buffer.h"
 #include "render.h"
 #ifdef AR_TIMING
 #include "timing.h"
@@ -863,6 +864,123 @@ static int create_start_streams_thread(pthread_t *thread, struct start_streams_a
     return rc;
 }
 
+// ---------------------------------------------------------------------------
+// CPU-buffer route (--cpu-buffer)
+// ---------------------------------------------------------------------------
+// the engine works on the Codec DMAs' own double buffers, like Bela: when the capture
+// DMA finishes a period, the loop reads it, renders, and writes the playback period
+// after the one the playback DMA reads now. the DSP does nothing per block. latency:
+// 2 periods from capture to playback. the time for a block, from the end of the capture
+// period to the playback DMA reading the period written, is one period less the playback
+// DMA's read-ahead (its FIFO watermark, 1 frame by default)
+
+// what the CPU-buffer loop counted
+struct cpu_buffer_stats {
+    uint64_t blocks;
+    unsigned int late;       // the playback DMA reached the period while it was written
+    unsigned int skipped;    // a playback period was not written in its turn
+    uint64_t first_bad;      // block of the first late or skipped period
+};
+
+// before the start: CPU-buffer mode on both endpoints, and both DMAs start together
+// (the loop relies on their periods lining up). < 0 on error (printed)
+static int cpu_buffer_enable(struct settings *settings)
+{
+    if (set_agm_hw_ep_cpu_buffer(settings->playback.frontend_name, settings->playback.backend_name,
+                                 false, true, 0) != 0 ||
+        set_agm_hw_ep_cpu_buffer(settings->capture.frontend_name, settings->capture.backend_name,
+                                 true, true, 0) != 0)
+        return -1;
+    if (set_agm_hw_ep_sync_start(settings->playback.frontend_name, settings->playback.backend_name,
+                                 false, 1, 2) != 0)
+        return -1;
+    if (set_agm_hw_ep_sync_start(settings->capture.frontend_name, settings->capture.backend_name,
+                                 true, 1, 2) != 0) {
+        // don't leave playback waiting for a capture endpoint that never joins
+        set_agm_hw_ep_sync_start(settings->playback.frontend_name, settings->playback.backend_name,
+                                 false, 0, 0);
+        return -1;
+    }
+    return 0;
+}
+
+// after the start: find and map both DMAs. < 0 on error (printed)
+static int cpu_buffer_map_dmas(struct settings *settings, const struct pcm_config *pb_config,
+                               const struct pcm_config *cap_config, struct cpu_buffer_dma *pb_dma,
+                               struct cpu_buffer_dma *cap_dma)
+{
+    struct hw_ep_cpu_buffer pb_info = {}, cap_info = {};
+
+    if (get_agm_hw_ep_cpu_buffer(settings->playback.frontend_name, settings->playback.backend_name,
+                                 false, &pb_info) != 0 ||
+        get_agm_hw_ep_cpu_buffer(settings->capture.frontend_name, settings->capture.backend_name,
+                                 true, &cap_info) != 0)
+        return -1;
+    if (cpu_buffer_map(pb_dma, &pb_info, true, pb_config->period_size, pb_config->channels) != 0)
+        return -1;
+    if (cpu_buffer_map(cap_dma, &cap_info, false, cap_config->period_size, cap_config->channels) != 0) {
+        cpu_buffer_unmap(pb_dma);
+        return -1;
+    }
+    if (g_verbose) {
+        printf("CPU buffer: playback DMA buffer 0x%08x, %u x %u frames x %u ch, registers 0x%08x, "
+               "watermark %u words\n", pb_info.buffer_addr, pb_info.num_periods, pb_config->period_size,
+               pb_info.num_channels, pb_info.regs_addr, pb_info.watermark);
+        printf("CPU buffer: capture DMA buffer 0x%08x, %u x %u frames x %u ch, registers 0x%08x, "
+               "watermark %u words\n", cap_info.buffer_addr, cap_info.num_periods, cap_config->period_size,
+               cap_info.num_channels, cap_info.regs_addr, cap_info.watermark);
+    }
+    return 0;
+}
+
+// the loop, until asked to stop. the poll between two reads of the capture DMA's position
+// is an out-of-band sleep with EVL, else a busy wait (give the audio thread its own CPU)
+static void cpu_buffer_loop(struct settings *settings, struct pcm_ctx *pb, struct pcm_ctx *cap,
+                            struct audio_ctx *actx, struct cpu_buffer_dma *pb_dma,
+                            struct cpu_buffer_dma *cap_dma, struct cpu_buffer_stats *stats)
+{
+    unsigned int cap_period = cpu_buffer_period(cap_dma);
+    int last_written = -1;
+
+    while (!should_stop.load()) {
+        // wait for the capture DMA to finish its period
+        unsigned int now = cpu_buffer_period(cap_dma);
+        if (now == cap_period) {
+            if (g_evl)
+                evl_rt_usleep(EVL_POLL_SLEEP_US);
+            continue;
+        }
+        unsigned int done = cap_period;
+        cap_period = now;
+
+        cpu_buffer_read_barrier();
+        cpu_buffer_read(cap_dma, done, cap->audio_buffer);
+
+        // user API function
+        render(actx, settings->user_argv);
+
+        // the playback period after the one the DMA reads now
+        unsigned int reading = cpu_buffer_period(pb_dma);
+        unsigned int next = (reading + 1) % pb_dma->num_periods;
+        if (last_written >= 0 && next != (unsigned int)(last_written + 1) % pb_dma->num_periods) {
+            if (stats->late + stats->skipped == 0)
+                stats->first_bad = stats->blocks;
+            stats->skipped++;
+        }
+        cpu_buffer_write(pb_dma, next, pb->audio_buffer);
+        memset(pb->audio_buffer, 0, pb->num_samples * sizeof(float));
+        cpu_buffer_write_barrier();
+        // still reading the period before: the block was in time
+        if (cpu_buffer_period(pb_dma) != reading) {
+            if (stats->late + stats->skipped == 0)
+                stats->first_bad = stats->blocks;
+            stats->late++;
+        }
+        last_written = (int)next;
+        stats->blocks++;
+    }
+}
+
 int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
 {
     int ret = 0;
@@ -923,7 +1041,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     // prime playback with silence, so the DSP has data from its first frame on.
     // MMAP mode writes the ring directly: playback_period() would wait for the DSP
     // to take a period before handing out the slot past the lead
-    if (settings->mmap) {
+    if (settings->mmap && !settings->cpu_buffer) {
         memset(pb->ring, 0, (size_t)prime_periods * pb_config->period_size * pb->frame_bytes);
         pb->appl_frames = (uint64_t)prime_periods * pb_config->period_size;
     }
@@ -941,8 +1059,16 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     // AE_SYNC_START=1 (environment): start the two Codec DMA interfaces together (custom
     // Codec DMA build). both endpoints join sync-start group 1 for this start only, and
     // the DSP enables both interfaces when the second one starts
+    // the CPU-buffer route always starts them together
     const char *sync_env = getenv("AE_SYNC_START");
-    if (cap && sync_env && atoi(sync_env) != 0) {
+    if (settings->cpu_buffer) {
+        if (cpu_buffer_enable(settings) != 0) {
+            fprintf(stderr, "CPU buffer: the Codec DMA endpoints refused CPU-buffer mode or sync start\n");
+            cleanup(&actx, settings->user_argv);
+            return -1;
+        }
+    }
+    else if (cap && sync_env && atoi(sync_env) != 0) {
         if (set_agm_hw_ep_sync_start(settings->playback.frontend_name, settings->playback.backend_name,
                                      false, 1, 2) != 0) {
             fprintf(stderr, "sync start: off, the streams start one after the other\n");
@@ -957,10 +1083,25 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     }
 
     // MMAP mode starts the streams from a helper thread, so the loop below already
-    // watches the DSP when it starts taking blocks (see start_streams_thread)
+    // watches the DSP when it starts taking blocks (see start_streams_thread). the
+    // CPU-buffer route has no DSP to keep up with: it starts them here, then maps the DMAs
     struct start_streams_arg start_arg = { settings, pb, cap, 0 };
     pthread_t start_thread;
-    if (settings->mmap) {
+    struct cpu_buffer_dma pb_dma = {}, cap_dma = {};
+    struct cpu_buffer_stats cpu_stats = {};
+    if (settings->cpu_buffer) {
+        if (start_streams(settings, pb, cap) < 0) {
+            cleanup(&actx, settings->user_argv);
+            return -1;
+        }
+        if (cpu_buffer_map_dmas(settings, pb_config, cap_config, &pb_dma, &cap_dma) != 0) {
+            cleanup(&actx, settings->user_argv);
+            pcm_stop(cap->pcm);
+            pcm_stop(pb->pcm);
+            return -1;
+        }
+    }
+    else if (settings->mmap) {
         if (create_start_streams_thread(&start_thread, &start_arg, settings->cpu_affinity) != 0) {
             fprintf(stderr, "could not create the stream start thread\n");
             cleanup(&actx, settings->user_argv);
@@ -988,7 +1129,9 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
 
     //------------------------
     // actual audio loop
-    while (!should_stop.load()) {
+    if (settings->cpu_buffer)
+        cpu_buffer_loop(settings, pb, cap, &actx, &pb_dma, &cap_dma, &cpu_stats);
+    while (!settings->cpu_buffer && !should_stop.load()) {
         // playback only, MMAP mode: wait for the DSP to take the current block before
         // rendering the next one, so that render() runs while the DSP plays the
         // current block. with capture, the capture wait below paces the loop instead
@@ -1067,7 +1210,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     // read before anything below makes Linux calls
     long evl_isw_end = settings->evl ? evl_rt_inband_switches() : 0;
 
-    if (settings->mmap) {
+    if (settings->mmap && !settings->cpu_buffer) {
         pthread_join(start_thread, nullptr);
         if (start_arg.ret < 0)
             ret = -1;
@@ -1083,6 +1226,12 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     if (status_env && atoi(status_env) != 0)
         report_hw_ep_start_status(settings, cap != nullptr);
 
+    // the DMA registers must not be read once the streams stop
+    if (settings->cpu_buffer) {
+        cpu_buffer_unmap(&pb_dma);
+        cpu_buffer_unmap(&cap_dma);
+    }
+
     if (cap) {
         if (settings->echo_reference)
             set_agm_ecref_path(settings->capture.frontend_name, settings->playback.backend_name, false);
@@ -1090,7 +1239,14 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     }
     pcm_stop(pb->pcm);
 
-    if (settings->mmap) {
+    if (settings->cpu_buffer) {
+        if (cpu_stats.late || cpu_stats.skipped)
+            fprintf(stderr, "CPU buffer: %u late and %u skipped playback periods (first at block %llu)\n",
+                    cpu_stats.late, cpu_stats.skipped, (unsigned long long)cpu_stats.first_bad);
+        if (g_verbose)
+            printf("CPU buffer: %llu blocks\n", (unsigned long long)cpu_stats.blocks);
+    }
+    else if (settings->mmap) {
         if (pb->block_mismatch || (cap && cap->block_mismatch)) {
             struct pcm_ctx *bad = pb->block_mismatch ? pb : cap;
             fprintf(stderr, "MMAP %s: the DSP block is %u frames, not the period (%u frames)\n",
@@ -1114,7 +1270,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
                    evl_isw_end - evl_isw_start);
     }
 #ifdef AR_TIMING
-    if (settings->mmap) {
+    if (settings->mmap && !settings->cpu_buffer) {
         timing_report(&pb->timing, "playback");
         if (cap)
             timing_report(&cap->timing, "capture");

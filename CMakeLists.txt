@@ -77,6 +77,7 @@ set(CORE_SRCS
     core/agm_mixer.cpp
     core/cpu_perf.cpp
     core/evl_rt.cpp
+    core/cpu_buffer.cpp
 )
 
 # pass project path as either relative to source dir or absolute

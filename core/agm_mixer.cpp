@@ -59,6 +59,7 @@
 // custom Codec DMA build only (non-Qualcomm IDs)
 #define PARAM_ID_CODEC_DMA_SYNC_START               0x18000101
 #define PARAM_ID_CODEC_DMA_START_STATUS             0x18000102
+#define PARAM_ID_CODEC_DMA_CPU_BUFFER               0x18000104
 
 /* Payload of PARAM_ID_CODEC_DMA_SYNC_START (custom Codec DMA build). */
 struct param_id_codec_dma_sync_start_t {
@@ -77,6 +78,23 @@ struct param_id_codec_dma_start_status_t {
     uint32_t first_intr_ts_msw;
     uint32_t fifo_err_cnt;
     uint32_t bus_err_cnt;
+};
+
+/* Payload of PARAM_ID_CODEC_DMA_CPU_BUFFER (custom Codec DMA build). Set sends enable and
+   watermark; get fills all the fields. */
+struct param_id_codec_dma_cpu_buffer_t {
+    uint32_t enable;
+    uint32_t watermark;
+    uint32_t active;
+    uint32_t buffer_addr;
+    uint32_t buffer_size;
+    uint32_t num_periods;
+    uint32_t period_size;
+    uint32_t bytes_per_sample;
+    uint32_t num_channels;
+    uint32_t regs_addr;
+    uint32_t dma_type;
+    uint32_t dma_idx;
 };
 
 //-------------------------------
@@ -1480,6 +1498,101 @@ int get_agm_hw_ep_start_status(char *frontend_name, char *backend_name, bool cap
     status->first_intr_ts_us = ((uint64_t)st->first_intr_ts_msw << 32) | st->first_intr_ts_lsw;
     status->fifo_err_cnt = st->fifo_err_cnt;
     status->bus_err_cnt = st->bus_err_cnt;
+
+    free(payload);
+    return 0;
+}
+
+int set_agm_hw_ep_cpu_buffer(char *frontend_name, char *backend_name, bool capture, bool enable,
+                             uint32_t watermark)
+{
+    int tag = capture ? DEVICE_HW_ENDPOINT_TX : DEVICE_HW_ENDPOINT_RX;
+    uint32_t miid = 0, mid = 0;
+    struct apm_module_param_data_t *header;
+    struct param_id_codec_dma_cpu_buffer_t *cfg;
+    uint8_t *payload;
+    size_t payloadSize = 0, padBytes = 0;
+    int ret;
+
+    if (get_agm_module_iid(frontend_name, backend_name, tag, &miid, &mid) != 0) {
+        fprintf(stderr, "CPU buffer: no module tagged %s\n", get_tag_name(tag));
+        return -1;
+    }
+
+    payload = create_agm_param_payload(sizeof(*cfg), &payloadSize, &padBytes);
+    if (!payload)
+        return -ENOMEM;
+
+    header = (struct apm_module_param_data_t *)payload;
+    header->module_instance_id = miid;
+    header->param_id = PARAM_ID_CODEC_DMA_CPU_BUFFER;
+    header->error_code = 0x0;
+    header->param_size = sizeof(*cfg);
+
+    cfg = (struct param_id_codec_dma_cpu_buffer_t *)(payload + sizeof(struct apm_module_param_data_t));
+    cfg->enable = enable ? 1 : 0;
+    cfg->watermark = watermark;
+
+    ret = set_agm_param(frontend_name, (void *)payload, payloadSize + padBytes);
+    free(payload);
+
+    if (ret != 0)
+        fprintf(stderr, "CPU buffer: %s (module 0x%X) refused CPU-buffer mode (%d); needs the "
+                        "custom Codec DMA firmware\n", get_tag_name(tag), miid, ret);
+    else if (g_verbose)
+        printf("CPU buffer: %s (module 0x%X) %s\n", get_tag_name(tag), miid, enable ? "on" : "off");
+    return ret;
+}
+
+int get_agm_hw_ep_cpu_buffer(char *frontend_name, char *backend_name, bool capture,
+                             struct hw_ep_cpu_buffer *info)
+{
+    int tag = capture ? DEVICE_HW_ENDPOINT_TX : DEVICE_HW_ENDPOINT_RX;
+    uint32_t miid = 0, mid = 0;
+    struct apm_module_param_data_t *header;
+    struct param_id_codec_dma_cpu_buffer_t *st;
+    uint8_t *payload;
+    size_t payloadSize = 0, padBytes = 0;
+    int ret;
+
+    if (get_agm_module_iid(frontend_name, backend_name, tag, &miid, &mid) != 0) {
+        fprintf(stderr, "CPU buffer: no module tagged %s\n", get_tag_name(tag));
+        return -1;
+    }
+
+    payload = create_agm_param_payload(sizeof(*st), &payloadSize, &padBytes);
+    if (!payload)
+        return -ENOMEM;
+
+    header = (struct apm_module_param_data_t *)payload;
+    header->module_instance_id = miid;
+    header->param_id = PARAM_ID_CODEC_DMA_CPU_BUFFER;
+    header->error_code = 0x0;
+    header->param_size = sizeof(*st);
+
+    ret = get_agm_param(frontend_name, (void *)payload, payloadSize + padBytes);
+    header = (struct apm_module_param_data_t *)payload;
+    if (ret == 0 && (header->error_code != 0 || header->param_size < sizeof(*st)))
+        ret = -EINVAL;
+    if (ret != 0) {
+        fprintf(stderr, "CPU buffer: %s (module 0x%X) did not answer (%d); needs the custom "
+                        "Codec DMA firmware\n", get_tag_name(tag), miid, ret);
+        free(payload);
+        return ret;
+    }
+
+    st = (struct param_id_codec_dma_cpu_buffer_t *)(payload + sizeof(struct apm_module_param_data_t));
+    info->active = st->active != 0;
+    info->buffer_addr = st->buffer_addr;
+    info->buffer_size = st->buffer_size;
+    info->num_periods = st->num_periods;
+    info->period_size = st->period_size;
+    info->bytes_per_sample = st->bytes_per_sample;
+    info->num_channels = st->num_channels;
+    info->regs_addr = st->regs_addr;
+    info->dma_type = st->dma_type;
+    info->dma_idx = st->dma_idx;
+    info->watermark = st->watermark;
 
     free(payload);
     return 0;
