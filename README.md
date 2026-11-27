@@ -13,7 +13,7 @@ Each branch builds on the one above it. This is the **`cpu-buffer`** branch.
 | `main` | The engine: `render()` once per period, audio read and written through AGM (RW mode) | QLI 1.8 or 2.1 (on 2.1: `-s 0 -e 0 -E 1`) | Stock | |
 | `mmap` | MMAP mode (`-M`): the engine reads and writes the DSP's shared ring buffers. Blocks shorter than 1 ms. EVL route (`--evl`) | QLI 2.1; the Xenomai (EVL) image for `--evl` | Custom: frame duration | An ACDB with Shared Memory Pull/Push Mode graphs (the QLI 2.1 ACDB has none). For periods under 48 frames, an AGM PCM plugin with a smaller minimum period |
 | `sync-start` | `mmap`, plus playback and capture Codec DMAs that start together | As `mmap` | Custom: frame duration, sync start | As `mmap`, plus the AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare) |
-| `cpu-buffer` | Only the CPU-buffer route: the engine reads and writes the Codec DMAs' own buffers, and the DSP does nothing per block. `sync-start` without its MMAP and read/write routes | QLI 2.1 Xenomai (EVL) image | Custom: frame duration, sync start, CPU buffer, sync align | The AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare), and the `ar_lpass_map` kernel module (`kernel/ar_lpass_map`). The stock ACDB and AGM PCM plugin are fine |
+| `cpu-buffer` | Only the CPU-buffer route: the engine reads and writes the Codec DMAs' own buffers, and the DSP does nothing per block. `sync-start` without its MMAP and read/write routes | QLI 2.1 Xenomai (EVL) image | Custom: frame duration, sync start, CPU buffer, sync align | The AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare), the `ar_lpass_map` kernel module (`kernel/ar_lpass_map`), and the kernel's `fs_sync_va` ([kernel fork](https://github.com/victorzappi/kernel/commit/928c5ccd5913), on). The stock ACDB and AGM PCM plugin are fine |
 
 **Custom ADSP firmware:** built from Qualcomm's proprietary ADSP sources
 (ADSP.HT.5.5.c8-00256.2, `kodiak.adsp.prod`, for the QCS6490), with our changes to the
@@ -259,11 +259,24 @@ CPU at its highest clock:
 
 When the second stream starts, the DSP enables the capture Codec DMA interface, waits
 for the capture DMA's first word, and enables the playback interface 10 us later. So the
-playback DMA reads the same distance ahead of the capture DMA on every start. Enabled
-together, the two interfaces start at a random point of the codecs' 20.8 us frame, and
-the playback DMA ends up one frame closer to or further from the capture DMA from one start
-to the next: that moved the round trip by up to one block, and at 3-frame blocks it left
-some runs with late periods.
+playback DMA starts on the same playback-codec frame tick relative to the capture DMA on
+every start. Enabled together, the two interfaces start at a random point of the codecs'
+20.8 us frame, and the playback DMA ends up one frame closer to or further from the capture
+DMA from one start to the next: that moved the round trip by up to one block, and at 3-frame
+blocks it left some runs with late periods.
+
+That is only the same every time if the two codecs' frame ticks are too. The playback (WSA)
+and capture (VA) codecs count their 48 kHz frames from the same clock, each with its own
+counter, and the kernel starts the two counters 102 to 123 us apart (measured) each time it
+powers the codecs up. So without a fix, where the playback ticks fall relative to the
+capture ticks changes at every power-up, anywhere in the frame; it moves the round trip by
+up to a sample and the engine's time per block by up to a frame (see the CPU-buffer route).
+When the playback ticks fall about halfway between capture ticks, the playback enable lands
+on a tick, and the playback DMA can still start one frame either way (2 of 94 power-ups). The
+kernel's `fs_sync_va` fixes it: the WSA driver restarts the VA counter right before starting
+its own, with interrupts off, so the ticks line up at every power-up (-0.05 to +0.20 us over
+46 power-ups on 13 boots). The 10 us delay then puts the playback enable halfway between two
+playback ticks. See "CPU-buffer route" for how to turn it on.
 
 `AE_START_STATUS=1` prints, at exit, when each interface was enabled and how many FIFO and
 bus errors each DMA had.
@@ -282,10 +295,13 @@ which shifts capture by about 0.5 ms.
 The engine works on the Codec DMAs' own double buffers, as Bela does. When the capture DMA
 finishes a period, the engine reads it, calls `render()`, and writes the first playback
 period the playback DMA has not started reading. The DSP does nothing per block. From
-capture to playback takes 2 periods, at every block size. Each block has one period less
-one frame, give or take 5 us, from the end of its capture period until the playback DMA
-reads it: 16 to 24 us at 2-frame blocks. The 5 us is where the two codecs' frame ticks fall
-relative to each other, which changes each time the kernel powers them up.
+capture to playback takes 2 periods, at every block size. With the kernel's `fs_sync_va`,
+each block has one period less one frame from the end of its capture period until the
+playback DMA reads it: 20.8 us at 2-frame blocks, 41.7 us at 3 frames and 62.6 us at 4
+frames, the same at every power-up. Without it, the codecs' frame ticks fall anywhere
+relative to each other and this time changes at every power-up by up to a frame: at 2-frame
+blocks it was 10.6 to 31.4 us over 94 power-ups on 18 boots, and the 7 power-ups with less
+than about 13 us had late periods.
 
 The audio goes only through the DMA buffers. The graphs are still opened and started,
 because the Codec DMA modules in them set up the DMAs, but no module runs per block. So
@@ -303,6 +319,21 @@ Besides the custom firmware with the CPU-buffer change, this needs:
   ```
   ```bash
   insmod ar_lpass_map.ko
+  ```
+- **The kernel's `fs_sync_va`**, so the two codecs' frame ticks line up at every power-up
+  (see "Synchronized full-duplex start"). It is a parameter of the WSA macro driver
+  (`snd-soc-lpass-wsa-macro`), added by commit
+  [`928c5cc`](https://github.com/victorzappi/kernel/commit/928c5ccd5913) of the kernel fork
+  (branch `qcom-6.18.y-evl`), and off by default. Turn it on with a modprobe option, e.g.
+  `/etc/modprobe.d/wsa-fs-sync-va.conf`:
+  ```
+  options snd_soc_lpass_wsa_macro fs_sync_va=1
+  ```
+  On a kernel without that commit, build the driver from the fork as a module for the
+  board's kernel and put it in `/lib/modules/$(uname -r)/updates/` (then `depmod -a`). Check
+  after a reboot (`Y` is on; it can also be switched at run time by writing 0 or 1):
+  ```bash
+  cat /sys/module/snd_soc_lpass_wsa_macro/parameters/fs_sync_va
   ```
 - **The backend config** for the channels and rate. The engine also checks the channel
   counts against what the firmware reports.
@@ -348,13 +379,18 @@ same for every pulse:
 
 The first pulse of each run measured one sample less. With the speaker a few cm away
 (3 runs of 10 s per block size) every round trip was 3 samples longer: 37, 39 and 41
-samples. Sound travels 0.71 cm in one sample at 48 kHz, so that was about 3 cm.
+samples. Sound travels 0.71 cm in one sample at 48 kHz, so that was about 3 cm. These runs
+were made before the kernel's `fs_sync_va`, so each at one codec phase. Over power-ups the
+phase moved the round trip by up to a sample: 35, 36 or 37 samples at 2-frame blocks over
+94 power-ups, with the speaker at one spot. With `fs_sync_va`, at the same spot, it was the
+same at every power-up: 36 samples for the first pulse and 37 after, over 36 power-ups on
+12 boots.
 
 So the round trip is 2 blocks plus 30 samples: the codecs, the amplifier, the speaker, the
 mic, 1.4 samples of air, and how far the playback DMA reads ahead of the capture DMA (the
-same on every start with the aligned start). The microphone itself takes under 30 us
-(TDK's T5818 datasheet): it only sends its 1-bit PDM stream, and the filtering is in the
-QCS6490. An earlier run at 4-frame blocks, with the speaker about 9 cm from the mic,
+same at every power-up with the aligned start and `fs_sync_va`). The microphone itself
+takes under 30 us (TDK's T5818 datasheet): it only sends its 1-bit PDM stream, and the
+filtering is in the QCS6490. An earlier run at 4-frame blocks, with the speaker about 9 cm from the mic,
 measured 51 samples: 8 for the engine, and 13 more of air than at 1 cm.
 
 The DMA FIFOs don't add to it. With 16-frame blocks the round trip was 62 samples
