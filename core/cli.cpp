@@ -81,6 +81,8 @@ void init_settings(struct settings *settings)
     playback->device_kv.key     = DEVICERX;
     playback->device_kv.value   = SPEAKER;
 
+    playback->dma_watermark     = 0;  // one frame
+
     // capture stream (mirrors playback structure with capture identity)
     struct pcm_stream *capture = &settings->capture;
 
@@ -119,6 +121,8 @@ void init_settings(struct settings *settings)
 
     capture->device_kv.key     = DEVICETX;
     capture->device_kv.value   = SPEAKER_MIC;
+
+    capture->dma_watermark     = 0;  // one frame
 }
 
 static void cleanup_stream(struct pcm_stream *stream)
@@ -171,6 +175,7 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-y | --devicepp-rx <value>             The devicepp key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-z | --devicerx <value>                The device key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-i | --instancerx <value>              The instance key value as a string or number, both decimal and hex (0 if not present)\n");
+    fprintf(stderr, "     --playback-watermark <words>      The playback Codec DMA's FIFO watermark, 1 to 8 32-bit words (default: one frame)\n");
 
     fprintf(stderr, "\nCapture options:\n");
     fprintf(stderr, "-D | --capture-virtual-device <num>    The virtual device number that represents the frontend\n");
@@ -183,6 +188,7 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-Y | --devicepp-tx <value>             The devicepp key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-Z | --devicetx <value>                The device key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-I | --instancetx <value>              The instance key value as a string or number, both decimal and hex (0 if not present)\n");
+    fprintf(stderr, "     --capture-watermark <words>       The capture Codec DMA's FIFO watermark, 1 to 8 32-bit words (default: one frame)\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +217,8 @@ int parse_cli(int argc, char **argv, struct settings *settings)
     enum {
         OPT_VERBOSE = 256,
         OPT_EVL,
+        OPT_PB_WATERMARK,
+        OPT_CAP_WATERMARK,
     };
 
     struct optparse opts;
@@ -249,6 +257,8 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         // would otherwise emit a stray NUL and hide the short flags listed after them
         { "verbose",                 OPT_VERBOSE,          OPTPARSE_NONE     },
         { "evl",                     OPT_EVL,              OPTPARSE_NONE     },
+        { "playback-watermark",      OPT_PB_WATERMARK,     OPTPARSE_REQUIRED },
+        { "capture-watermark",       OPT_CAP_WATERMARK,    OPTPARSE_REQUIRED },
         { 0, 0, OPTPARSE_NONE }
     };
 
@@ -296,6 +306,18 @@ int parse_cli(int argc, char **argv, struct settings *settings)
             break;
         case OPT_EVL:
             settings->evl = true;
+            break;
+        case OPT_PB_WATERMARK:
+            if (sscanf(opts.optarg, "%u", &settings->playback.dma_watermark) != 1) {
+                fprintf(stderr, "failed parsing playback watermark '%s'\n", opts.optarg);
+                return -1;
+            }
+            break;
+        case OPT_CAP_WATERMARK:
+            if (sscanf(opts.optarg, "%u", &settings->capture.dma_watermark) != 1) {
+                fprintf(stderr, "failed parsing capture watermark '%s'\n", opts.optarg);
+                return -1;
+            }
             break;
         // ----- playback -----
         case 'd':
@@ -490,6 +512,12 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         printf("Arguments not recognized by main, forwarded to the project: ");
         for (int i = 1; i < n_unrecognized; i++)
             printf("%s%s", unrecognized[i], (i < n_unrecognized - 1) ? ", " : "\n");
+    }
+
+    // the custom Codec DMA firmware takes 1 to 8 words (0: its default, one frame)
+    if (settings->playback.dma_watermark > 8 || settings->capture.dma_watermark > 8) {
+        fprintf(stderr, "the Codec DMA watermark is 1 to 8 words\n");
+        return -1;
     }
 
     return 0;

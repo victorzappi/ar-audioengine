@@ -21,6 +21,9 @@ struct pcm_stream {
     int flags;                     // PCM_OUT / PCM_IN -- also encodes direction
 
     struct pcm_config config;      // per-stream pcm params (channels, rate, period...)
+    unsigned int dma_watermark;    // CLI --playback-watermark / --capture-watermark: the Codec
+                                   // DMA FIFO watermark, 32-bit words; 0: one frame (the
+                                   // firmware's default)
 
     // graph params: CLI args set the kv *values*, the keys are fixed
     struct agm_key_value stream_kv;

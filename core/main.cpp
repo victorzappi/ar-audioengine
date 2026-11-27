@@ -492,14 +492,15 @@ struct cpu_buffer_stats {
     uint64_t first_bad;      // block of the first late or skipped period
 };
 
-// before the start: CPU-buffer mode on both endpoints, and both DMAs start together
-// (the loop relies on their periods lining up). < 0 on error (printed)
+// before the start: CPU-buffer mode on both endpoints, with their FIFO watermarks, and
+// both DMAs start together (the loop relies on their periods lining up). < 0 on error
+// (printed)
 static int cpu_buffer_enable(struct settings *settings)
 {
     if (set_agm_hw_ep_cpu_buffer(settings->playback.frontend_name, settings->playback.backend_name,
-                                 false, true, 0) != 0 ||
+                                 false, true, settings->playback.dma_watermark) != 0 ||
         set_agm_hw_ep_cpu_buffer(settings->capture.frontend_name, settings->capture.backend_name,
-                                 true, true, 0) != 0)
+                                 true, true, settings->capture.dma_watermark) != 0)
         return -1;
     if (set_agm_hw_ep_sync_start(settings->playback.frontend_name, settings->playback.backend_name,
                                  false, 1, 2) != 0)
