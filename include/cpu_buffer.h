@@ -42,11 +42,22 @@ int cpu_buffer_map(struct cpu_buffer_dma *dma, const struct hw_ep_cpu_buffer *in
                    unsigned int period_frames, unsigned int channels);
 void cpu_buffer_unmap(struct cpu_buffer_dma *dma);
 
-// the period the DMA reads (playback) or writes (capture) now
+// the period the DMA writes now (capture): the one CURR_ADDR is in
 static inline unsigned int cpu_buffer_period(const struct cpu_buffer_dma *dma)
 {
     uint32_t frame = (*dma->curr - dma->buf_addr) / (4 * dma->channels);
     return (frame % dma->buffer_frames) / dma->period_frames;
+}
+
+// the period the DMA read its last word from (playback): the one before CURR_ADDR. when
+// CURR_ADDR is at the start of a period, that period is not read yet and can still be
+// written
+static inline unsigned int cpu_buffer_fetched_period(const struct cpu_buffer_dma *dma)
+{
+    uint32_t words = dma->buffer_frames * dma->channels;
+    uint32_t word = (*dma->curr - dma->buf_addr) / 4;
+    uint32_t last = (word % words + words - 1) % words;
+    return (last / dma->channels) / dma->period_frames;
 }
 
 // order the buffer reads after the position read that found the period complete, and

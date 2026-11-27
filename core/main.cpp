@@ -570,8 +570,9 @@ static void cpu_buffer_loop(struct settings *settings, struct pcm_ctx *pb, struc
         // user API function
         render(actx, settings->user_argv);
 
-        // the playback period after the one the DMA reads now
-        unsigned int reading = cpu_buffer_period(pb_dma);
+        // the playback period after the one the DMA read its last word from: the first
+        // one it has not started reading
+        unsigned int reading = cpu_buffer_fetched_period(pb_dma);
         unsigned int next = (reading + 1) % pb_dma->num_periods;
         if (last_written >= 0 && next != (unsigned int)(last_written + 1) % pb_dma->num_periods) {
             if (stats->late + stats->skipped == 0)
@@ -581,8 +582,8 @@ static void cpu_buffer_loop(struct settings *settings, struct pcm_ctx *pb, struc
         cpu_buffer_write(pb_dma, next, pb->audio_buffer);
         memset(pb->audio_buffer, 0, pb->num_samples * sizeof(float));
         cpu_buffer_write_barrier();
-        // still reading the period before: the block was in time
-        if (cpu_buffer_period(pb_dma) != reading) {
+        // no word of the block read yet: it was in time
+        if (cpu_buffer_fetched_period(pb_dma) != reading) {
             if (stats->late + stats->skipped == 0)
                 stats->first_bad = stats->blocks;
             stats->late++;
