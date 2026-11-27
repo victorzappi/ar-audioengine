@@ -54,6 +54,13 @@ enum { DIR_PLAYBACK = 0, DIR_CAPTURE = 1, NUM_DIRS = 2 };
 // on CPU 7 (latmus), so it reads the position about every 2 us
 #define EVL_POLL_SLEEP_US 1
 
+// the DSP starts capture first and playback this long after the capture DMA's first word,
+// so playback reads the same distance ahead of capture on every start. started together,
+// the two DMAs land one frame closer or further apart from one start to the next. 10 us is
+// about half a frame at 48 kHz: far from where the two codecs' frame ticks fall (within
+// 5 us of each other on the RB3 Gen 2)
+#define CPU_BUFFER_PLAYBACK_START_DELAY_US 10
+
 struct pcm_ctx {
     struct pcm *pcm;               // opened and started for the graph, never read or written
     unsigned int num_samples;      // samples per block: period_size * channels
@@ -443,7 +450,7 @@ static void print_hw_ep_start_status(const char *name, const struct hw_ep_start_
     printf("start status: %-8s group %u, interface enabled at %llu us", name, st->sync_group_id,
            (unsigned long long)st->intf_enable_ts_us);
     if (st->sync_group_id)
-        printf(" (group writes took %u us)", st->group_enable_spread_us);
+        printf(" (group: first to last enable %u us)", st->group_enable_spread_us);
     if (st->first_intr_ts_valid)
         printf(", first DMA interrupt at %llu us", (unsigned long long)st->first_intr_ts_us);
     else
@@ -493,8 +500,8 @@ struct cpu_buffer_stats {
 };
 
 // before the start: CPU-buffer mode on both endpoints, with their FIFO watermarks, and
-// both DMAs start together (the loop relies on their periods lining up). < 0 on error
-// (printed)
+// both DMAs start together, playback a fixed time after capture (the loop relies on their
+// periods lining up). < 0 on error (printed)
 static int cpu_buffer_enable(struct settings *settings)
 {
     if (set_agm_hw_ep_cpu_buffer(settings->playback.frontend_name, settings->playback.backend_name,
@@ -503,13 +510,15 @@ static int cpu_buffer_enable(struct settings *settings)
                                  true, true, settings->capture.dma_watermark) != 0)
         return -1;
     if (set_agm_hw_ep_sync_start(settings->playback.frontend_name, settings->playback.backend_name,
-                                 false, 1, 2) != 0)
+                                 false, 1, 2, HW_EP_SYNC_ALIGN_SOURCE,
+                                 CPU_BUFFER_PLAYBACK_START_DELAY_US) != 0)
         return -1;
     if (set_agm_hw_ep_sync_start(settings->capture.frontend_name, settings->capture.backend_name,
-                                 true, 1, 2) != 0) {
+                                 true, 1, 2, HW_EP_SYNC_ALIGN_SOURCE,
+                                 CPU_BUFFER_PLAYBACK_START_DELAY_US) != 0) {
         // don't leave playback waiting for a capture endpoint that never joins
         set_agm_hw_ep_sync_start(settings->playback.frontend_name, settings->playback.backend_name,
-                                 false, 0, 0);
+                                 false, 0, 0, HW_EP_SYNC_ALIGN_NONE, 0);
         return -1;
     }
     return 0;

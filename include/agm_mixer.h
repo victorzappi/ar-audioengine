@@ -66,19 +66,25 @@ int set_agm_ecref_path(char* cp_frontend_name, char* pb_backend_name, bool enabl
 int get_agm_backend_format(const char *filename, char *backend_name, unsigned int *rate,
                            unsigned int *channels, unsigned int *bits);
 
+// how the last member of a sync-start group enables the interfaces
+#define HW_EP_SYNC_ALIGN_NONE   0  // all together, back to back
+#define HW_EP_SYNC_ALIGN_SOURCE 1  // capture first; playback sink_delay_us after the capture
+                                   // DMA's first word (needs the sync-align firmware change)
+
 // sync start of the Codec DMA endpoints (needs the custom Codec DMA build): endpoints set
 // to the same non-zero group with the same member count leave their interface disabled at
-// start, and the last one to start enables them all back to back. applies to the next
-// start only; group 0 cancels it. capture selects the DEVICE_HW_ENDPOINT_TX module of the
-// frontend, else DEVICE_HW_ENDPOINT_RX. < 0 on error
+// start, and the last one to start enables them all, as align says (HW_EP_SYNC_ALIGN_*).
+// applies to the next start only; group 0 cancels it. capture selects the
+// DEVICE_HW_ENDPOINT_TX module of the frontend, else DEVICE_HW_ENDPOINT_RX. < 0 on error
 int set_agm_hw_ep_sync_start(char *frontend_name, char *backend_name, bool capture,
-                             uint32_t group_id, uint32_t num_members);
+                             uint32_t group_id, uint32_t num_members, uint32_t align,
+                             uint32_t sink_delay_us);
 
 // last start of a Codec DMA endpoint, as the custom Codec DMA build reports it
 struct hw_ep_start_status {
     uint32_t sync_group_id;          // 0 if it started on its own
     uint64_t intf_enable_ts_us;      // DSP AV timer right after the interface was enabled
-    uint32_t group_enable_spread_us; // sync start: time the group's enable writes took
+    uint32_t group_enable_spread_us; // sync start: first to last interface enable of the group
     bool first_intr_ts_valid;
     uint64_t first_intr_ts_us;       // latched timestamp of the first DMA interrupt
     uint32_t fifo_err_cnt;

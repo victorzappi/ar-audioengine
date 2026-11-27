@@ -61,10 +61,13 @@
 #define PARAM_ID_CODEC_DMA_START_STATUS             0x18000102
 #define PARAM_ID_CODEC_DMA_CPU_BUFFER               0x18000104
 
-/* Payload of PARAM_ID_CODEC_DMA_SYNC_START (custom Codec DMA build). */
+/* Payload of PARAM_ID_CODEC_DMA_SYNC_START (custom Codec DMA build). align and
+   sink_delay_us need the sync-align change; without them the payload is 8 bytes. */
 struct param_id_codec_dma_sync_start_t {
     uint32_t group_id;
     uint32_t num_members;
+    uint32_t align;          // HW_EP_SYNC_ALIGN_*
+    uint32_t sink_delay_us;  // with HW_EP_SYNC_ALIGN_SOURCE
 };
 
 /* Payload of PARAM_ID_CODEC_DMA_START_STATUS (custom Codec DMA build, read only). */
@@ -1425,7 +1428,8 @@ int configure_agm_hw_ep_block(char *frontend_name, char *backend_name, unsigned 
 }
 
 int set_agm_hw_ep_sync_start(char *frontend_name, char *backend_name, bool capture,
-                             uint32_t group_id, uint32_t num_members)
+                             uint32_t group_id, uint32_t num_members, uint32_t align,
+                             uint32_t sink_delay_us)
 {
     int tag = capture ? DEVICE_HW_ENDPOINT_TX : DEVICE_HW_ENDPOINT_RX;
     uint32_t miid = 0, mid = 0;
@@ -1440,7 +1444,11 @@ int set_agm_hw_ep_sync_start(char *frontend_name, char *backend_name, bool captu
         return -1;
     }
 
-    payload = create_agm_param_payload(sizeof(*cfg), &payloadSize, &padBytes);
+    // without an aligned start, the 8-byte payload every custom firmware takes
+    bool aligned = group_id != 0 && align != HW_EP_SYNC_ALIGN_NONE;
+    size_t cfg_size = aligned ? sizeof(*cfg) : 2 * sizeof(uint32_t);
+
+    payload = create_agm_param_payload(cfg_size, &payloadSize, &padBytes);
     if (!payload)
         return -ENOMEM;
 
@@ -1448,11 +1456,15 @@ int set_agm_hw_ep_sync_start(char *frontend_name, char *backend_name, bool captu
     header->module_instance_id = miid;
     header->param_id = PARAM_ID_CODEC_DMA_SYNC_START;
     header->error_code = 0x0;
-    header->param_size = sizeof(*cfg);
+    header->param_size = cfg_size;
 
     cfg = (struct param_id_codec_dma_sync_start_t *)(payload + sizeof(struct apm_module_param_data_t));
     cfg->group_id = group_id;
     cfg->num_members = num_members;
+    if (aligned) {
+        cfg->align = align;
+        cfg->sink_delay_us = sink_delay_us;
+    }
 
     ret = set_agm_param(frontend_name, (void *)payload, payloadSize + padBytes);
     free(payload);
@@ -1460,6 +1472,10 @@ int set_agm_hw_ep_sync_start(char *frontend_name, char *backend_name, bool captu
     if (ret != 0)
         fprintf(stderr, "sync start: %s (module 0x%X) refused group %u (%d); needs the custom "
                         "Codec DMA firmware\n", get_tag_name(tag), miid, group_id, ret);
+    else if (g_verbose && aligned)
+        printf("sync start: %s (module 0x%X) in group %u of %u, aligned start, playback %u us "
+               "after the capture DMA's first word\n",
+               get_tag_name(tag), miid, group_id, num_members, sink_delay_us);
     else if (g_verbose)
         printf("sync start: %s (module 0x%X) in group %u of %u\n",
                get_tag_name(tag), miid, group_id, num_members);
