@@ -6,15 +6,14 @@ The developer writes a simple audio callback (`render()`), and the engine takes 
 
 ## Branches
 
-Each branch builds on the one above it, and needs more outside this repository. This is
-the **`sync-start`** branch.
+Each branch builds on the one above it. This is the **`sync-start`** branch.
 
 | Branch | What it adds | QLI image | ADSP firmware | Also needs |
 |---|---|---|---|---|
 | `main` | The engine: `render()` once per period, audio read and written through AGM (RW mode) | QLI 1.8 or 2.1 (on 2.1: `-s 0 -e 0 -E 1`) | Stock | |
 | `mmap` | MMAP mode (`-M`): the engine reads and writes the DSP's shared ring buffers. Blocks shorter than 1 ms. EVL route (`--evl`) | QLI 2.1; the Xenomai (EVL) image for `--evl` | Custom: frame duration | An ACDB with Shared Memory Pull/Push Mode graphs (the QLI 2.1 ACDB has none). For periods under 48 frames, an AGM PCM plugin with a smaller minimum period |
 | `sync-start` | `mmap`, plus playback and capture Codec DMAs that start together | As `mmap` | Custom: frame duration, sync start | As `mmap`, plus the AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare) |
-| `cpu-buffer` | `sync-start`, plus the CPU-buffer route (`--cpu-buffer`): the engine reads and writes the Codec DMAs' own buffers, and the DSP does nothing per block | QLI 2.1 Xenomai (EVL) image | Custom: frame duration, sync start, CPU buffer | As `sync-start`, plus the `ar_lpass_map` kernel module (`kernel/ar_lpass_map`) |
+| `cpu-buffer` | Only the CPU-buffer route: the engine reads and writes the Codec DMAs' own buffers, and the DSP does nothing per block. `sync-start` without its MMAP and read/write routes | QLI 2.1 Xenomai (EVL) image | Custom: frame duration, sync start, CPU buffer | The AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare), and the `ar_lpass_map` kernel module (`kernel/ar_lpass_map`). The stock ACDB and AGM PCM plugin are fine |
 
 **Custom ADSP firmware:** built from Qualcomm's proprietary ADSP sources
 (ADSP.HT.5.5.c8-00256.2, `kodiak.adsp.prod`, for the QCS6490), with our changes to the
