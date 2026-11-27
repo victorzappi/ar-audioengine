@@ -13,7 +13,7 @@ Each branch builds on the one above it. This is the **`cpu-buffer`** branch.
 | `main` | The engine: `render()` once per period, audio read and written through AGM (RW mode) | QLI 1.8 or 2.1 (on 2.1: `-s 0 -e 0 -E 1`) | Stock | |
 | `mmap` | MMAP mode (`-M`): the engine reads and writes the DSP's shared ring buffers. Blocks shorter than 1 ms. EVL route (`--evl`) | QLI 2.1; the Xenomai (EVL) image for `--evl` | Custom: frame duration | An ACDB with Shared Memory Pull/Push Mode graphs (the QLI 2.1 ACDB has none). For periods under 48 frames, an AGM PCM plugin with a smaller minimum period |
 | `sync-start` | `mmap`, plus playback and capture Codec DMAs that start together | As `mmap` | Custom: frame duration, sync start | As `mmap`, plus the AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare) |
-| `cpu-buffer` | Only the CPU-buffer route: the engine reads and writes the Codec DMAs' own buffers, and the DSP does nothing per block. `sync-start` without its MMAP and read/write routes | QLI 2.1 Xenomai (EVL) image | Custom: frame duration, sync start, CPU buffer | The AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare), and the `ar_lpass_map` kernel module (`kernel/ar_lpass_map`). The stock ACDB and AGM PCM plugin are fine |
+| `cpu-buffer` | Only the CPU-buffer route: the engine reads and writes the Codec DMAs' own buffers, and the DSP does nothing per block. `sync-start` without its MMAP and read/write routes | QLI 2.1 Xenomai (EVL) image | Custom: frame duration, sync start, CPU buffer, sync align | The AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare), and the `ar_lpass_map` kernel module (`kernel/ar_lpass_map`). The stock ACDB and AGM PCM plugin are fine |
 
 **Custom ADSP firmware:** built from Qualcomm's proprietary ADSP sources
 (ADSP.HT.5.5.c8-00256.2, `kodiak.adsp.prod`, for the QCS6490), with our changes to the
@@ -223,6 +223,7 @@ PCM config, mixer ctl and graph setup, CPU pinning/governor changes, the DMAs).
 | `-y`, `--devicepp-rx` | Device PP graph key value | `DEVICEPP_RX_AUDIO_MBDRC` |
 | `-z`, `--devicerx` | Device graph key value | `SPEAKER` |
 | `-i`, `--instancerx` | Instance graph key value | `INSTANCE_1` |
+| `--playback-watermark` | The playback Codec DMA's FIFO watermark, 1 to 8 32-bit words | one frame |
 
 #### Capture
 
@@ -238,6 +239,7 @@ PCM config, mixer ctl and graph setup, CPU pinning/governor changes, the DMAs).
 | `-Y`, `--devicepp-tx` | Device PP graph key value | `0` |
 | `-Z`, `--devicetx` | Device graph key value | `SPEAKER_MIC` |
 | `-I`, `--instancetx` | Instance graph key value | `0` |
+| `--capture-watermark` | The capture Codec DMA's FIFO watermark, 1 to 8 32-bit words | one frame |
 
 Graph key values can be passed as strings (e.g., `SPEAKER` for playback,
 `RAW_RECORD` for capture) or hex numbers; `0` leaves the key out. The stock QLI 2.1
@@ -255,9 +257,16 @@ CPU at its highest clock:
 
 ### Synchronized full-duplex start
 
-The DSP enables the playback and the capture Codec DMA interfaces together (within 1 us),
-when the second stream starts. `AE_START_STATUS=1` prints, at exit, when each interface was
-enabled and how many FIFO and bus errors each DMA had.
+When the second stream starts, the DSP enables the capture Codec DMA interface, waits
+for the capture DMA's first word, and enables the playback interface 10 us later. So the
+playback DMA reads the same distance ahead of the capture DMA on every start. Enabled
+together, the two interfaces start at a random point of the codecs' 20.8 us frame, and
+the playback DMA ends up one frame closer to or further from the capture DMA from one start
+to the next: that moved the round trip by up to one block, and at 3-frame blocks it left
+some runs with late periods.
+
+`AE_START_STATUS=1` prints, at exit, when each interface was enabled and how many FIFO and
+bus errors each DMA had.
 
 ```bash
 AE_START_STATUS=1 ./build/ar_audioengine --evl -m 7 -g -p 4
@@ -271,10 +280,12 @@ which shifts capture by about 0.5 ms.
 ### CPU-buffer route
 
 The engine works on the Codec DMAs' own double buffers, as Bela does. When the capture DMA
-finishes a period, the engine reads it, calls `render()`, and writes the playback period
-after the one the playback DMA is reading. The DSP does nothing per block. From capture to
-playback takes 2 periods. Each block has one period, less one frame (the playback DMA's
-read-ahead), from the end of its capture period until the playback DMA reads it.
+finishes a period, the engine reads it, calls `render()`, and writes the first playback
+period the playback DMA has not started reading. The DSP does nothing per block. From
+capture to playback takes 2 periods, at every block size. Each block has one period less
+one frame, give or take 5 us, from the end of its capture period until the playback DMA
+reads it: 16 to 24 us at 2-frame blocks. The 5 us is where the two codecs' frame ticks fall
+relative to each other, which changes each time the kernel powers them up.
 
 The audio goes only through the DMA buffers. The graphs are still opened and started,
 because the Codec DMA modules in them set up the DMAs, but no module runs per block. So
@@ -305,38 +316,52 @@ At exit the engine reports any late or skipped playback periods. On the RB3 Gen 
 
 | Block | With `--evl` | Without EVL |
 |---|---|---|
-| 4 frames (83 us) | no late or skipped periods (6 runs) | no late or skipped periods |
-| 3 frames (63 us) | no late or skipped periods | |
-| 2 frames (42 us) | no late or skipped periods | |
+| 4 frames (83 us) | no late or skipped periods (3 runs) | no late or skipped periods (3 runs) |
+| 3 frames (63 us) | no late or skipped periods (3 runs) | |
+| 2 frames (42 us) | no late or skipped periods (3 runs, and 3 more of 30 s) | |
 
-Without `-g`: 3, 2 and 960-frame blocks had no late or skipped periods with `--evl`; at 4
-frames, 8 of 9 runs had none, and one had 51,392 late and 7,346 skipped of 118,972 (cause
-not found). Without either `-g` or EVL, runs at 4 frames had up to 250 late periods in
-10 s.
+Before the aligned start (both interfaces enabled together), without `-g`: 3, 2 and
+960-frame blocks had no late or skipped periods with `--evl`; at 4 frames, 8 of 9 runs had
+none, and one had 51,392 late and 7,346 skipped of 118,972 (cause not found). Without
+either `-g` or EVL, runs at 4 frames had up to 250 late periods in 10 s.
 
 #### Round-trip latency
 
 Measured with the `latency_tester` project (`projects/latency_tester`): a pulse every
 second on the speakers, and the samples until the mic hears it. The RB3 Gen 2 has no
 line in or out, so a speaker faces the board's microphone (a TDK T5818 on the mainboard;
-the speaker outputs are on the interposer), about 1 cm away. Built with
+the speaker outputs are on the interposer). Built with
 `-DPROJECT_PATH=projects/latency_tester`:
 
 ```bash
 ./build/ar_audioengine --evl -m 7 -g -p 2
 ```
 
-With 2-frame blocks the round trip is **0.71 ms (34 samples)**, the same on every pulse:
+With the speaker a few cm from the mic (distance not measured), 3 runs of 10 s per block
+size, the same in every run:
 
-| Part | Samples | ms |
-|---|---|---|
-| Engine: 2 blocks of 2 frames | 4 | 0.08 |
-| Air, about 1 cm | about 1.4 | 0.03 |
-| Codecs, amplifier, speaker and mic | about 28.5 | about 0.6 |
+| Block | Round trip | Engine: 2 blocks | The rest |
+|---|---|---|---|
+| 2 frames | 37 samples (0.77 ms) | 4 | 33 |
+| 3 frames | 39 samples (0.81 ms) | 6 | 33 |
+| 4 frames | 41 samples (0.85 ms) | 8 | 33 |
 
-So the round trip is 2 blocks plus about 30 samples, most of it the converters and the
-transducers. An earlier run at 4-frame blocks, with the speaker about 9 cm from the mic,
+The first pulse of each run measured one sample less.
+
+So the round trip is 2 blocks plus about 30 samples: the codecs, the amplifier, the
+speaker, the mic, and the air. With the speaker about 1 cm from the mic the rest was about
+28 samples, about 1.4 of them air: 34 samples at 2-frame blocks, measured before the
+aligned start, when 2-frame blocks took 3 blocks (6 samples) because the playback DMA could
+read up to 3 frames ahead of the capture DMA. The microphone itself takes under 30 us
+(TDK's T5818 datasheet): it only sends its 1-bit PDM stream, and the filtering is in the
+QCS6490. An earlier run at 4-frame blocks, with the speaker about 9 cm from the mic,
 measured 51 samples: 8 for the engine, and 13 more of air.
+
+The DMA FIFOs don't add to it. With 16-frame blocks the round trip was 62 samples
+(2 x 16 + 30) with the default watermarks (one frame), with a playback watermark of 4 or
+8 words (2 or 4 stereo frames) and with a capture watermark of 4 or 8 words, within one
+sample. A deeper playback FIFO also removes the FIFO error that the playback DMA reports
+at every start.
 
 The tester prints the pulse's peak at the mic and the noise every second. Set
 `--threshold` (default 0.1) between the two: at 1 cm the peak was -9.6 dBFS and the noise
