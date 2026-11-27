@@ -13,7 +13,7 @@ Each branch builds on the one above it. This is the **`cpu-buffer`** branch.
 | `main` | The engine: `render()` once per period, audio read and written through AGM (RW mode) | QLI 1.8 or 2.1 (on 2.1: `-s 0 -e 0 -E 1`) | Stock | |
 | `mmap` | MMAP mode (`-M`): the engine reads and writes the DSP's shared ring buffers. Blocks shorter than 1 ms. EVL route (`--evl`) | QLI 2.1; the Xenomai (EVL) image for `--evl` | Custom: frame duration | An ACDB with Shared Memory Pull/Push Mode graphs (the QLI 2.1 ACDB has none). For periods under 48 frames, an AGM PCM plugin with a smaller minimum period |
 | `sync-start` | `mmap`, plus playback and capture Codec DMAs that start together | As `mmap` | Custom: frame duration, sync start | As `mmap`, plus the AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare) |
-| `cpu-buffer` | The CPU-buffer route (`--cpu-buffer`): the engine reads and writes the Codec DMAs' own buffers, and the DSP does nothing per block. `sync-start` without its MMAP route | QLI 2.1 Xenomai (EVL) image | Custom: frame duration, sync start, CPU buffer | The AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare), and the `ar_lpass_map` kernel module (`kernel/ar_lpass_map`). The stock ACDB and AGM PCM plugin are fine |
+| `cpu-buffer` | Only the CPU-buffer route: the engine reads and writes the Codec DMAs' own buffers, and the DSP does nothing per block. `sync-start` without its MMAP and read/write routes | QLI 2.1 Xenomai (EVL) image | Custom: frame duration, sync start, CPU buffer | The AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare), and the `ar_lpass_map` kernel module (`kernel/ar_lpass_map`). The stock ACDB and AGM PCM plugin are fine |
 
 **Custom ADSP firmware:** built from Qualcomm's proprietary ADSP sources
 (ADSP.HT.5.5.c8-00256.2, `kodiak.adsp.prod`, for the QCS6490), with our changes to the
@@ -30,10 +30,12 @@ ar-audioengine abstracts away the complexity of AudioReach's mixer controls, gra
 - **`render()`** — called once per audio period; fill the audio buffer with samples
 - **`cleanup()`** — called when audio stops; free your resources here
 
-The engine handles the full AudioReach signal chain:
+On this branch, AudioReach only sets the path up. The audio itself goes straight between
+`render()` and the Codec DMA buffers, and the DSP does nothing per block (see
+[CPU-buffer route](#cpu-buffer-route)):
 
 ```
-CPU (your render callback) → AudioReach → Hexagon DSP → Codec → Audio Output
+mic → Codec → capture DMA buffer → render() → playback DMA buffer → Codec → speaker
 ```
 
 DSP use cases are described by graphs — directed arrangements of processing modules. These graphs are selected at runtime by passing graph key values (GKVs) that identify the stream type, device, device post-processing, and instance.
@@ -173,12 +175,11 @@ systemctl --user stop pulseaudio.socket pulseaudio.service
 
 ### Options
 
-The engine runs full duplex (playback + capture) by default. Pass `-u` /
-`--no-capture` for playback only. Most options come in playback and capture
-variants, using a case-symmetric convention: playback is the lowercase letter,
-capture is the same letter upper-cased (e.g. `-b`/`-B` for bits). The rate/period
-options are set once and copied to both streams (per-stream overrides exist as
-long options).
+The engine always runs full duplex: the capture DMA paces the loop. Most options come in
+playback and capture variants, using a case-symmetric convention: playback is the
+lowercase letter, capture is the same letter upper-cased (e.g. `-n`/`-N` for channels).
+The block (`-p`) and the rate (`-r`) are the same for both streams. The defaults are for
+the RB3 Gen 2 on QLI 2.1 with the stock ACDB.
 
 #### Shared
 
@@ -186,17 +187,13 @@ long options).
 |---|---|---|
 | `-c`, `--virtual-card` | Virtual card number | `100` |
 | `-s`, `--physical-card` | Physical card number | `0` |
-| `-p`, `--period-size` | Period size (both streams) | `960` |
-| `-q`, `--period-count` | Period count (both streams) | `4` |
-| `-r`, `--rate` | Sample rate (both streams) | `48000` |
-| `-u`, `--no-capture` | Disable capture (playback only) | full duplex on |
-| `-a`, `--echo-reference` | Enable the capture←playback echo reference path (only applied when capture is active) | `off` |
+| `-p`, `--period-size` | The block: frames per Codec DMA period, both streams | `960` |
+| `-r`, `--rate` | Sample rate, both streams (the Codec DMAs' rate) | `48000` |
 | `-m`, `--cpu-affinity` | Pin the audio thread to this 0-based CPU index | unset (no affinity) |
 | `-g`, `--performance-governor` | Force every online CPU's scaling governor to `performance` for the run, restored on exit | `off` |
-| `--evl` | Run the audio thread out-of-band under EVL (Xenomai 4); needs `--cpu-buffer` and a build with `-DEVL=ON` | `off` |
-| `--cpu-buffer` | CPU-buffer route: read/write the Codec DMA buffers directly, the DSP does nothing per block; needs full duplex, the custom firmware and `ar_lpass_map` (see [CPU-buffer route](#cpu-buffer-route)) | `off` |
+| `--evl` | Run the audio thread out-of-band under EVL (Xenomai 4); needs a build with `-DEVL=ON` | `off` |
 | `-h`, `--help` | Print help and exit | |
-| `--verbose` | Print engine diagnostics (device/graph setup, mixer ctls, CPU pinning...) | `off` |
+| `--verbose` | Print engine diagnostics (device/graph setup, mixer ctls, CPU pinning, DMA addresses...) | `off` |
 
 `--performance-governor` needs write access to
 `/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor` (root, or matching
@@ -207,87 +204,75 @@ never fails the run, it just silently has no effect on that CPU.
 By default the engine only prints the startup banner and a message on
 successful exit; errors and warnings always print regardless. Pass
 `--verbose` to also see per-stream diagnostics (frontend/backend resolution,
-PCM config, mixer ctl and graph setup, CPU pinning/governor changes).
+PCM config, mixer ctl and graph setup, CPU pinning/governor changes, the DMAs).
 
 #### Playback
 
 | Option | Description | Default |
 |---|---|---|
 | `-d`, `--playback-virtual-device` | Virtual device number | `100` |
-| `-e`, `--playback-physical-device` | Physical device number | `2` |
+| `-e`, `--playback-physical-device` | Physical device number | `0` (`CODEC_DMA-LPAIF_WSA-RX-0`) |
 | `-t`, `--playback-frontend-name` | Frontend device name | auto |
 | `-k`, `--playback-backend-name` | Backend device name | auto |
-| `-n`, `--playback-channels` | Number of channels | `2` |
-| `-b`, `--playback-bits` | Bits per sample | `16` |
-| `-f`, `--playback-float` | Use floating-point PCM | `off` |
+| `-n`, `--playback-channels` | Number of channels: the playback DMA's | `2` |
 | `-o`, `--playback-path` | Hardware mixer playback path | `speaker` |
 | `-w`, `--streamrx` | Stream graph key value | `PCM_LL_PLAYBACK` |
 | `-x`, `--streampp-rx` | Stream PP graph key value | `0` |
 | `-y`, `--devicepp-rx` | Device PP graph key value | `DEVICEPP_RX_AUDIO_MBDRC` |
 | `-z`, `--devicerx` | Device graph key value | `SPEAKER` |
 | `-i`, `--instancerx` | Instance graph key value | `INSTANCE_1` |
-| `--playback-period-size` / `-count` / `--playback-rate` | Per-stream overrides of the shared values | shared |
 
 #### Capture
 
 | Option | Description | Default |
 |---|---|---|
 | `-D`, `--capture-virtual-device` | Virtual device number | `101` |
-| `-E`, `--capture-physical-device` | Physical device number | `3` |
+| `-E`, `--capture-physical-device` | Physical device number | `1` (`CODEC_DMA-LPAIF_VA-TX-0`) |
 | `-T`, `--capture-frontend-name` | Frontend device name | auto |
 | `-K`, `--capture-backend-name` | Backend device name | auto |
-| `-N`, `--capture-channels` | Number of channels | `2` |
-| `-B`, `--capture-bits` | Bits per sample | `16` |
-| `-F`, `--capture-float` | Use floating-point PCM | `off` |
+| `-N`, `--capture-channels` | Number of channels: the capture DMA's | `1` |
 | `-O`, `--capture-path` | Hardware mixer capture path | `speaker-mic` |
-| `-W`, `--streamtx` | Stream graph key value | `PCM_RECORD` |
+| `-W`, `--streamtx` | Stream graph key value | `RAW_RECORD` |
 | `-X`, `--streampp-tx` | Stream PP graph key value | `0` |
-| `-Y`, `--devicepp-tx` | Device PP graph key value | `DEVICEPP_TX_AUDIO_FLUENCE_SMECNS` |
+| `-Y`, `--devicepp-tx` | Device PP graph key value | `0` |
 | `-Z`, `--devicetx` | Device graph key value | `SPEAKER_MIC` |
-| `-I`, `--instancetx` | Instance graph key value | `INSTANCE_1` |
-| `--capture-period-size` / `-count` / `--capture-rate` | Per-stream overrides of the shared values | shared |
+| `-I`, `--instancetx` | Instance graph key value | `0` |
 
 Graph key values can be passed as strings (e.g., `SPEAKER` for playback,
-`PCM_RECORD` for capture) or hex numbers.
+`RAW_RECORD` for capture) or hex numbers; `0` leaves the key out. The stock QLI 2.1
+`PCM_RECORD` graph includes Fluence, which the custom firmware does not open:
+`RAW_RECORD` reaches the same capture Codec DMA.
 
 ### Example
 
+4-frame blocks (83 us at 48 kHz), the audio thread on the isolated CPU 7 under EVL:
+
 ```bash
-./build/ar_audioengine -c 100 -d 100 -k CODEC_DMA-LPAIF_WSA-RX-0 -s 0 -e 0
+./build/ar_audioengine --evl -m 7 -p 4
 ```
 
 ### Synchronized full-duplex start
 
-On this branch, `AE_SYNC_START=1` makes the DSP enable the playback and the capture
-Codec DMA interfaces together (within 1 us), when the second stream starts.
-`AE_START_STATUS=1` prints, at exit, when each interface was enabled and when its first
-DMA interrupt arrived.
+The DSP enables the playback and the capture Codec DMA interfaces together (within 1 us),
+when the second stream starts. `AE_START_STATUS=1` prints, at exit, when each interface was
+enabled and how many FIFO and bus errors each DMA had.
 
 ```bash
-AE_SYNC_START=1 AE_START_STATUS=1 ./build/ar_audioengine -s 0 -e 0 -E 1
+AE_START_STATUS=1 ./build/ar_audioengine --evl -m 7 -p 4
 ```
 
-This needs two changes outside this repository:
-
-- AGM that prepares the Codec DMA backends at `pcm_prepare()`: branch
-  [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare)
-  of audioreach-graphmgr.
-- An ADSP firmware whose Codec DMA module supports the sync-start parameter. It is
-  built from Qualcomm's proprietary ADSP sources and is not published.
-
-Without that firmware the engine reports that sync start is off and starts the two
-streams one after the other. Without that AGM, the interfaces still start together, but
-the capture codec powers up after the start, which shifts capture by about 0.5 ms.
-Tested in RW mode, and with the CPU-buffer route, which always starts the two together.
+Without the AGM branch
+[`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare),
+the interfaces still start together, but the capture codec powers up after the start,
+which shifts capture by about 0.5 ms.
 
 ### CPU-buffer route
 
-With `--cpu-buffer`, the engine works on the Codec DMAs' own double buffers, as Bela does.
-When the capture DMA finishes a period, the engine reads it, calls `render()`, and writes
-the playback period after the one the playback DMA is reading. The DSP does nothing per
-block. From capture to playback takes 2 periods. Each block has one period, less one frame
-(the playback DMA's read-ahead), from the end of its capture period until the playback DMA
-reads it.
+The engine works on the Codec DMAs' own double buffers, as Bela does. When the capture DMA
+finishes a period, the engine reads it, calls `render()`, and writes the playback period
+after the one the playback DMA is reading. The DSP does nothing per block. From capture to
+playback takes 2 periods. Each block has one period, less one frame (the playback DMA's
+read-ahead), from the end of its capture period until the playback DMA reads it.
 
 The audio goes only through the DMA buffers. The graphs are still opened and started,
 because the Codec DMA modules in them set up the DMAs, but no module runs per block. So
@@ -306,27 +291,21 @@ Besides the custom firmware with the CPU-buffer change, this needs:
   ```bash
   insmod ar_lpass_map.ko
   ```
-- **Full duplex, and the DMAs' channel counts** for `-n` and `-N`. The engine checks them
-  against what the firmware reports, and says what to pass if they differ.
+- **The DMAs' channel counts** for `-n` and `-N` (the defaults fit the RB3 Gen 2). The
+  engine checks them against what the firmware reports, and says what to pass if they
+  differ.
 - **`--evl`**, with the audio thread on an isolated CPU (`-m`). Without EVL the loop polls
   in a busy wait, and Linux still interrupts it now and then.
-
-Example with 4-frame blocks (83 us at 48 kHz) and the stock QLI 2.1 graphs. The capture
-graph is `RAW_RECORD`: the stock `PCM_RECORD` graph includes Fluence, which this firmware
-does not open.
-
-```bash
-./build/ar_audioengine -s 0 -e 0 -E 1 --cpu-buffer --evl -m 7 -p 4 -q 2 -N 1 -W RAW_RECORD -I 0 -Y 0
-```
 
 At exit the engine reports any late or skipped playback periods. On the RB3 Gen 2 (QLI
 2.1 Xenomai image, stock ACDB and AGM PCM plugin), 10 s per run:
 
 | Block | With `--evl` | Without EVL |
 |---|---|---|
-| 4 frames (83 us) | no late or skipped periods | 1 skipped, at the start |
+| 4 frames (83 us) | no late or skipped periods in 8 of 9 runs; one run had 51,392 late and 7,346 skipped of 118,972 (cause not found) | 1 skipped, at the start |
 | 3 frames (63 us) | no late or skipped periods | no late or skipped periods |
 | 2 frames (42 us) | no late or skipped periods | no late or skipped periods |
+| 960 frames (20 ms) | no late or skipped periods | |
 
 Without EVL, earlier runs at 4 frames had up to 250 late periods in 10 s.
 
