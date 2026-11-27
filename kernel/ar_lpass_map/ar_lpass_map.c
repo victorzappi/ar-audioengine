@@ -5,7 +5,7 @@
 
 /*
  * ar_lpass_map: maps the Codec DMA buffers and DMA registers of the LPASS (audio
- * subsystem) into ar-audioengine, for its CPU-buffer route (--cpu-buffer). There the
+ * subsystem) into ar-audioengine, for its CPU-buffer route. There the
  * engine reads and writes the Codec DMAs' own double buffers, in LPASS on-chip memory,
  * and follows each DMA through its current-address register; the DSP does nothing per
  * block. The kernel has no /dev/mem on this platform, hence this module.

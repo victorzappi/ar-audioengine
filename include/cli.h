@@ -20,9 +20,6 @@ struct pcm_stream {
     char *mixer_path;              // hardware mixer path (-o playback / -O capture)
     int flags;                     // PCM_OUT / PCM_IN -- also encodes direction
 
-    unsigned int bits;             // sample bit-depth (-b playback / -B capture)
-    bool is_float;                 // floating-point PCM (-f playback / -F capture)
-
     struct pcm_config config;      // per-stream pcm params (channels, rate, period...)
 
     // graph params: CLI args set the kv *values*, the keys are fixed
@@ -39,17 +36,11 @@ struct settings {
     // shared across both directions
     unsigned int virtual_card;     // CLI -c
     unsigned int physical_card;    // CLI -s
-    bool full_duplex;              // defaults on; -u/--no-capture disables capture
-    bool echo_reference;           // defaults off; -a/--echo-reference enables the
-                                   // capture<-playback echo reference (only if capture is active)
     int cpu_affinity;              // CLI -m; unset (no affinity) by default -- see
                                    // CPU_AFFINITY_UNSET in cpu_perf.h
     bool force_performance_governor; // CLI -g; defaults off
     bool evl;                      // CLI --evl; defaults off. the audio thread runs out-of-band
-                                   // under EVL (Xenomai 4); needs cpu_buffer
-    bool cpu_buffer;               // CLI --cpu-buffer; defaults off. the engine reads/writes the
-                                   // Codec DMA buffers directly, the DSP does nothing per block;
-                                   // needs full duplex
+                                   // under EVL (Xenomai 4)
     bool verbose;                  // CLI --verbose; defaults off (engine prints only
                                     // the startup banner; pass --verbose for full diagnostics)
 

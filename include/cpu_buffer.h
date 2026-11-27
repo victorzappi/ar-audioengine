@@ -11,7 +11,7 @@
 #include <stdint.h>
 #include "agm_mixer.h"
 
-// CPU-buffer route (--cpu-buffer): the engine reads the capture Codec DMA's buffer and
+// CPU-buffer route: the engine reads the capture Codec DMA's buffer and
 // writes the playback Codec DMA's buffer itself, in LPASS on-chip memory, and follows
 // each DMA through its current-address register (CURR_ADDR). The DSP does nothing per
 // block (custom Codec DMA firmware, PARAM_ID_CODEC_DMA_CPU_BUFFER). The buffers and

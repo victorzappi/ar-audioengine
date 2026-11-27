@@ -32,12 +32,9 @@ void init_settings(struct settings *settings)
     // shared across both directions
     settings->virtual_card = 100;
     settings->physical_card = 0;
-    settings->full_duplex = true;
-    settings->echo_reference = false;
     settings->cpu_affinity = CPU_AFFINITY_UNSET;
     settings->force_performance_governor = false;
     settings->evl = false;
-    settings->cpu_buffer = false;
     settings->verbose = false;
     settings->user_argv = nullptr;  // populated by parse_cli
 
@@ -45,20 +42,19 @@ void init_settings(struct settings *settings)
     struct pcm_stream *playback = &settings->playback;
 
     playback->virtual_device = 100;
-    playback->physical_device = 2;
+    playback->physical_device = 0;  // QLI 2.1: CODEC_DMA-LPAIF_WSA-RX-0
     playback->frontend_name = nullptr;
     playback->backend_name = nullptr;
     playback->mixer_path = strdup(DEFAULT_PLAYBACK_MIXER_PATH);
     playback->flags = PCM_OUT;
 
-    playback->bits = 16;
-    playback->is_float = false;
-
+    // the audio is always in the Codec DMA's format (see cpu_buffer.h): the PCM's period
+    // count and format only matter for opening the graph
     playback->config.period_size = 960;
     playback->config.period_count = 2;
     playback->config.channels = 2;
     playback->config.rate = 48000;
-    playback->config.format = PCM_FORMAT_INVALID;  // derived from bits/is_float in init_ctx
+    playback->config.format = PCM_FORMAT_S16_LE;
 
     // these can be left to default, because ARE does not support aumtomatic pcm stop
     playback->config.silence_threshold = 0;
@@ -89,38 +85,37 @@ void init_settings(struct settings *settings)
     struct pcm_stream *capture = &settings->capture;
 
     capture->virtual_device = 101;
-    capture->physical_device = 3;
+    capture->physical_device = 1;  // QLI 2.1: CODEC_DMA-LPAIF_VA-TX-0
     capture->frontend_name = nullptr;
     capture->backend_name = nullptr;
     capture->mixer_path = strdup(DEFAULT_CAPTURE_MIXER_PATH);
     capture->flags = PCM_IN;
 
-    capture->bits = 16;
-    capture->is_float = false;
-
     capture->config.period_size = 960;
     capture->config.period_count = 2;
-    capture->config.channels = 2;
+    capture->config.channels = 1;  // the speaker mic's DMA is mono
     capture->config.rate = 48000;
-    capture->config.format = PCM_FORMAT_INVALID;  // derived from bits/is_float in init_ctx
+    capture->config.format = PCM_FORMAT_S16_LE;
 
     capture->config.silence_threshold = 0;
     capture->config.silence_size = 0;
     capture->config.stop_threshold = 0;
     capture->config.start_threshold = 0;
 
-    // capture graph keys; values default to 0 (override via CLI; TX names accepted)
+    // capture graph keys; values of 0 leave the key out (override via CLI; TX names
+    // accepted). the QLI 2.1 PCM_RECORD graph needs Fluence, which the custom Codec DMA
+    // firmware does not open: RAW_RECORD reaches the same Codec DMA
     capture->stream_kv.key     = STREAMTX;
-    capture->stream_kv.value   = PCM_RECORD;
+    capture->stream_kv.value   = RAW_RECORD;
 
     capture->streampp_kv.key   = STREAMPP_TX;
     capture->streampp_kv.value = 0;
 
     capture->instance_kv.key   = INSTANCE;
-    capture->instance_kv.value = INSTANCE_1;
+    capture->instance_kv.value = 0;
 
     capture->devicepp_kv.key   = DEVICEPP_TX;
-    capture->devicepp_kv.value = DEVICEPP_TX_AUDIO_FLUENCE_SMECNS;
+    capture->devicepp_kv.value = 0;
 
     capture->device_kv.key     = DEVICETX;
     capture->device_kv.value   = SPEAKER_MIC;
@@ -155,16 +150,12 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "\nShared options (apply to the whole engine):\n");
     fprintf(stderr, "-c | --virtual-card <card num>         The virtual card number that contains the frontend device\n");
     fprintf(stderr, "-s | --physical-card <card num>        The physical card number that contains the backend device\n");
-    fprintf(stderr, "-p | --period-size <size>              The PCM period size (copied to both playback and capture)\n");
-    fprintf(stderr, "-q | --period-count <count>            The number of PCM periods (copied to both playback and capture)\n");
-    fprintf(stderr, "-r | --rate <rate>                     The audio sample rate (copied to both playback and capture)\n");
-    fprintf(stderr, "-u | --no-capture                      Disable full-duplex (playback only)\n");
-    fprintf(stderr, "-a | --echo-reference                  Enable the capture<-playback echo reference path (only if capture is active; default off)\n");
+    fprintf(stderr, "-p | --period-size <size>              The block: frames per Codec DMA period, playback and capture\n");
+    fprintf(stderr, "-r | --rate <rate>                     The sample rate, playback and capture (the Codec DMAs' rate)\n");
     fprintf(stderr, "-m | --cpu-affinity <cpu index>        Pin the audio thread to this 0-based CPU index (default: unset, no affinity)\n");
     fprintf(stderr, "-g | --performance-governor             Force every online CPU's scaling governor to 'performance' for the duration of the audio thread (default off)\n");
     fprintf(stderr, "-h | --help                            Print this help and exit\n");
-    fprintf(stderr, "     --evl                              Run the audio thread out-of-band under EVL (Xenomai 4); needs --cpu-buffer and a build with -DEVL=ON (default off)\n");
-    fprintf(stderr, "     --cpu-buffer                       CPU-buffer route: read/write the Codec DMA buffers directly, the DSP does nothing per block; needs full duplex, the custom Codec DMA firmware and the ar_lpass_map module (default off)\n");
+    fprintf(stderr, "     --evl                              Run the audio thread out-of-band under EVL (Xenomai 4); needs a build with -DEVL=ON (default off)\n");
     fprintf(stderr, "     --verbose                          Print engine diagnostics (device/graph setup, mixer ctls, CPU pinning...); default off, only the startup banner is printed\n");
     fprintf(stderr, "\nAny unrecognized options and trailing arguments are forwarded to the project\n");
     fprintf(stderr, "(as setup/render/cleanup's user_data, argv-style).\n");
@@ -174,36 +165,26 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-e | --playback-physical-device <num>  The physical device number that represents the backend\n");
     fprintf(stderr, "-t | --playback-frontend-name <name>   The frontend device name (parsed automatically if not set)\n");
     fprintf(stderr, "-k | --playback-backend-name <name>    The backend device name (parsed automatically if not set)\n");
-    fprintf(stderr, "-n | --playback-channels <count>       The number of channels\n");
-    fprintf(stderr, "-b | --playback-bits <bit-count>       The number of bits in one sample\n");
-    fprintf(stderr, "-f | --playback-float                  The samples are in floating-point PCM\n");
+    fprintf(stderr, "-n | --playback-channels <count>       The number of channels (the playback DMA's)\n");
     fprintf(stderr, "-o | --playback-path <path>            The hardware mixer playback path\n");
     fprintf(stderr, "-w | --streamrx <value>                The stream key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-x | --streampp-rx <value>             The streampp key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-y | --devicepp-rx <value>             The devicepp key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-z | --devicerx <value>                The device key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-i | --instancerx <value>              The instance key value as a string or number, both decimal and hex (0 if not present)\n");
-    fprintf(stderr, "     --playback-period-size <size>     Override the playback period size only\n");
-    fprintf(stderr, "     --playback-period-count <count>   Override the playback period count only\n");
-    fprintf(stderr, "     --playback-rate <rate>            Override the playback sample rate only\n");
 
-    fprintf(stderr, "\nCapture options (full duplex):\n");
+    fprintf(stderr, "\nCapture options:\n");
     fprintf(stderr, "-D | --capture-virtual-device <num>    The virtual device number that represents the frontend\n");
     fprintf(stderr, "-E | --capture-physical-device <num>   The physical device number that represents the backend\n");
     fprintf(stderr, "-T | --capture-frontend-name <name>    The frontend device name (parsed automatically if not set)\n");
     fprintf(stderr, "-K | --capture-backend-name <name>     The backend device name (parsed automatically if not set)\n");
-    fprintf(stderr, "-N | --capture-channels <count>        The number of channels\n");
-    fprintf(stderr, "-B | --capture-bits <bit-count>        The number of bits in one sample\n");
-    fprintf(stderr, "-F | --capture-float                   The samples are in floating-point PCM\n");
+    fprintf(stderr, "-N | --capture-channels <count>        The number of channels (the capture DMA's)\n");
     fprintf(stderr, "-O | --capture-path <path>             The hardware mixer capture path\n");
     fprintf(stderr, "-W | --streamtx <value>                The stream key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-X | --streampp-tx <value>             The streampp key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-Y | --devicepp-tx <value>             The devicepp key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-Z | --devicetx <value>                The device key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-I | --instancetx <value>              The instance key value as a string or number, both decimal and hex (0 if not present)\n");
-    fprintf(stderr, "     --capture-period-size <size>      Override the capture period size only\n");
-    fprintf(stderr, "     --capture-period-count <count>    Override the capture period count only\n");
-    fprintf(stderr, "     --capture-rate <rate>             Override the capture sample rate only\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -230,15 +211,8 @@ int parse_cli(int argc, char **argv, struct settings *settings)
     // long-only option ids (no short flag); start past the ASCII range so they
     // never collide with the single-char options
     enum {
-        OPT_PB_PERIOD_SIZE = 256,
-        OPT_PB_PERIOD_COUNT,
-        OPT_PB_RATE,
-        OPT_CAP_PERIOD_SIZE,
-        OPT_CAP_PERIOD_COUNT,
-        OPT_CAP_RATE,
-        OPT_VERBOSE,
+        OPT_VERBOSE = 256,
         OPT_EVL,
-        OPT_CPU_BUFFER,
     };
 
     struct optparse opts;
@@ -247,10 +221,7 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         { "virtual-card",            'c', OPTPARSE_REQUIRED },
         { "physical-card",           's', OPTPARSE_REQUIRED },
         { "period-size",             'p', OPTPARSE_REQUIRED },
-        { "period-count",            'q', OPTPARSE_REQUIRED },
         { "rate",                    'r', OPTPARSE_REQUIRED },
-        { "no-capture",              'u', OPTPARSE_NONE     },
-        { "echo-reference",          'a', OPTPARSE_NONE     },
         { "cpu-affinity",            'm', OPTPARSE_REQUIRED },
         { "performance-governor",    'g', OPTPARSE_NONE     },
         { "help",                    'h', OPTPARSE_NONE     },
@@ -260,8 +231,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         { "playback-frontend-name",  't', OPTPARSE_REQUIRED },
         { "playback-backend-name",   'k', OPTPARSE_REQUIRED },
         { "playback-channels",       'n', OPTPARSE_REQUIRED },
-        { "playback-bits",           'b', OPTPARSE_REQUIRED },
-        { "playback-float",          'f', OPTPARSE_NONE     },
         { "playback-path",           'o', OPTPARSE_REQUIRED },
         { "streamrx",                'w', OPTPARSE_REQUIRED },
         { "streampp-rx",             'x', OPTPARSE_REQUIRED },
@@ -274,8 +243,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         { "capture-frontend-name",   'T', OPTPARSE_REQUIRED },
         { "capture-backend-name",    'K', OPTPARSE_REQUIRED },
         { "capture-channels",        'N', OPTPARSE_REQUIRED },
-        { "capture-bits",            'B', OPTPARSE_REQUIRED },
-        { "capture-float",           'F', OPTPARSE_NONE     },
         { "capture-path",            'O', OPTPARSE_REQUIRED },
         { "streamtx",                'W', OPTPARSE_REQUIRED },
         { "streampp-tx",             'X', OPTPARSE_REQUIRED },
@@ -285,15 +252,8 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         // long-only overrides (no short flag). MUST come last: optparse builds its
         // short-option string by casting each shortname to char, so these >255 ids
         // would otherwise emit a stray NUL and hide the short flags listed after them
-        { "playback-period-size",    OPT_PB_PERIOD_SIZE,   OPTPARSE_REQUIRED },
-        { "playback-period-count",   OPT_PB_PERIOD_COUNT,  OPTPARSE_REQUIRED },
-        { "playback-rate",           OPT_PB_RATE,          OPTPARSE_REQUIRED },
-        { "capture-period-size",     OPT_CAP_PERIOD_SIZE,  OPTPARSE_REQUIRED },
-        { "capture-period-count",    OPT_CAP_PERIOD_COUNT, OPTPARSE_REQUIRED },
-        { "capture-rate",            OPT_CAP_RATE,         OPTPARSE_REQUIRED },
         { "verbose",                 OPT_VERBOSE,          OPTPARSE_NONE     },
         { "evl",                     OPT_EVL,              OPTPARSE_NONE     },
-        { "cpu-buffer",              OPT_CPU_BUFFER,       OPTPARSE_NONE     },
         { 0, 0, OPTPARSE_NONE }
     };
 
@@ -324,16 +284,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
             settings->capture.config.period_size = v;
             break;
         }
-        case 'q': {
-            unsigned int v;
-            if (sscanf(opts.optarg, "%u", &v) != 1) {
-                fprintf(stderr, "failed parsing period count '%s'\n", opts.optarg);
-                return -1;
-            }
-            settings->playback.config.period_count = v;
-            settings->capture.config.period_count = v;
-            break;
-        }
         case 'r': {
             unsigned int v;
             if (sscanf(opts.optarg, "%u", &v) != 1) {
@@ -344,12 +294,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
             settings->capture.config.rate = v;
             break;
         }
-        case 'u':
-            settings->full_duplex = false;
-            break;
-        case 'a':
-            settings->echo_reference = true;
-            break;
         case 'm':
             if (sscanf(opts.optarg, "%d", &settings->cpu_affinity) != 1) {
                 fprintf(stderr, "failed parsing cpu affinity index '%s'\n", opts.optarg);
@@ -368,10 +312,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         case OPT_EVL:
             settings->evl = true;
             break;
-        case OPT_CPU_BUFFER:
-            settings->cpu_buffer = true;
-            break;
-
         // ----- playback -----
         case 'd':
             if (sscanf(opts.optarg, "%u", &settings->playback.virtual_device) != 1) {
@@ -404,15 +344,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
                 fprintf(stderr, "failed parsing playback channel count '%s'\n", opts.optarg);
                 return -1;
             }
-            break;
-        case 'b':
-            if (sscanf(opts.optarg, "%u", &settings->playback.bits) != 1) {
-                fprintf(stderr, "failed parsing playback bits per one sample '%s'\n", opts.optarg);
-                return -1;
-            }
-            break;
-        case 'f':
-            settings->playback.is_float = true;
             break;
         case 'o':
             free(settings->playback.mixer_path);
@@ -469,25 +400,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
                 }
             }
             break;
-        case OPT_PB_PERIOD_SIZE:
-            if (sscanf(opts.optarg, "%u", &settings->playback.config.period_size) != 1) {
-                fprintf(stderr, "failed parsing playback period size '%s'\n", opts.optarg);
-                return -1;
-            }
-            break;
-        case OPT_PB_PERIOD_COUNT:
-            if (sscanf(opts.optarg, "%u", &settings->playback.config.period_count) != 1) {
-                fprintf(stderr, "failed parsing playback period count '%s'\n", opts.optarg);
-                return -1;
-            }
-            break;
-        case OPT_PB_RATE:
-            if (sscanf(opts.optarg, "%u", &settings->playback.config.rate) != 1) {
-                fprintf(stderr, "failed parsing playback rate '%s'\n", opts.optarg);
-                return -1;
-            }
-            break;
-
         // ----- capture -----
         case 'D':
             if (sscanf(opts.optarg, "%u", &settings->capture.virtual_device) != 1) {
@@ -520,15 +432,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
                 fprintf(stderr, "failed parsing capture channel count '%s'\n", opts.optarg);
                 return -1;
             }
-            break;
-        case 'B':
-            if (sscanf(opts.optarg, "%u", &settings->capture.bits) != 1) {
-                fprintf(stderr, "failed parsing capture bits per one sample '%s'\n", opts.optarg);
-                return -1;
-            }
-            break;
-        case 'F':
-            settings->capture.is_float = true;
             break;
         case 'O':
             free(settings->capture.mixer_path);
@@ -584,25 +487,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
                 }
             }
             break;
-        case OPT_CAP_PERIOD_SIZE:
-            if (sscanf(opts.optarg, "%u", &settings->capture.config.period_size) != 1) {
-                fprintf(stderr, "failed parsing capture period size '%s'\n", opts.optarg);
-                return -1;
-            }
-            break;
-        case OPT_CAP_PERIOD_COUNT:
-            if (sscanf(opts.optarg, "%u", &settings->capture.config.period_count) != 1) {
-                fprintf(stderr, "failed parsing capture period count '%s'\n", opts.optarg);
-                return -1;
-            }
-            break;
-        case OPT_CAP_RATE:
-            if (sscanf(opts.optarg, "%u", &settings->capture.config.rate) != 1) {
-                fprintf(stderr, "failed parsing capture rate '%s'\n", opts.optarg);
-                return -1;
-            }
-            break;
-
         case '?':
             // not one of ours: forward the option (and any attached value) to
             // the project instead of failing. the offending token sits at
@@ -633,18 +517,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         printf("Arguments not recognized by main, forwarded to the project: ");
         for (int i = 1; i < n_unrecognized; i++)
             printf("%s%s", unrecognized[i], (i < n_unrecognized - 1) ? ", " : "\n");
-    }
-
-    // the EVL route polls the Codec DMAs: RW mode makes Linux system calls every period
-    if (settings->evl && !settings->cpu_buffer) {
-        fprintf(stderr, "--evl needs --cpu-buffer\n");
-        return -1;
-    }
-
-    // the capture DMA paces the CPU-buffer loop
-    if (settings->cpu_buffer && !settings->full_duplex) {
-        fprintf(stderr, "--cpu-buffer needs full duplex (no -u)\n");
-        return -1;
     }
 
     return 0;

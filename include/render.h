@@ -5,7 +5,7 @@
 
 // Audio context structure (high-level audio buffer processing)
 struct audio_ctx {
-    const float * const audio_in;  // capture samples for this period (nullptr in playback-only mode)
+    const float * const audio_in;  // capture samples for this period
     float * const audio_out;  // playback output; const pointer (address cannot change), but data can be modified
     const unsigned int period_size;
     const unsigned int channels;

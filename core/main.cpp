@@ -6,8 +6,8 @@
 /*ar_audioengine
 real-time audioreach-based audio engine
 
-usage:
-./ar_audioengine -c 100 -d 100 -k CODEC_DMA-LPAIF_WSA-RX-0 -s 0 -e 0 -w PCM_LL_PLAYBACK -y DEVICEPP_RX_AUDIO_MBDRC -z SPEAKER -i INSTANCE_1
+usage (QLI 2.1, 4-frame blocks, audio thread on CPU 7 under EVL):
+./ar_audioengine --evl -m 7 -p 4
 
 configure, build and clean commands in CMakeLists.txt
 */
@@ -37,8 +37,8 @@ configure, build and clean commands in CMakeLists.txt
 #include "cpu_buffer.h"
 #include "render.h"
 
-// we assume a little-endian CPU: sample conversion copies the host integer's low
-// bytes straight to/from the (little-endian) PCM stream via memcpy
+// we assume a little-endian CPU, like the Codec DMAs: their 32-bit samples are read and
+// written as native words
 static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
               "ar_audioengine assumes a little-endian CPU");
 
@@ -49,25 +49,15 @@ static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
 // stream directions; used to index the per-direction runtime context array
 enum { DIR_PLAYBACK = 0, DIR_CAPTURE = 1, NUM_DIRS = 2 };
 
-// RW mode: periods of silence written to the playback pcm before it starts. with 2,
-// the combined capture->playback loop runs at its minimum latency of 2 periods, with
-// one period of slack to render and write each block
-#define PLAYBACK_PRIME_PERIODS 2
-
-// CPU-buffer route with EVL (--cpu-buffer --evl): the audio thread sleeps this long
+// EVL route (--evl): the audio thread sleeps this long
 // between two reads of the capture DMA's position, out-of-band. it wakes about 1 us late
 // on CPU 7 (latmus), so it reads the position about every 2 us
 #define EVL_POLL_SLEEP_US 1
 
 struct pcm_ctx {
-    struct pcm *pcm;
-    unsigned int phys_bytes_per_sample;
-    unsigned int bytes_per_sample;
-    unsigned int max_value;
-    bool is_float;
-    unsigned int num_samples;
-    float *audio_buffer;
-    char *raw_buffer;
+    struct pcm *pcm;               // opened and started for the graph, never read or written
+    unsigned int num_samples;      // samples per block: period_size * channels
+    float *audio_buffer;           // render()'s input (capture) or output (playback)
 };
 
 std::atomic_int should_stop(0);
@@ -80,13 +70,6 @@ static bool g_verbose = false;
 // EVL route (--evl): set once in main(), after EVL has been found. file-scope so
 // the CPU-buffer loop can read it
 static bool g_evl = false;
-
-// hot-path sample conversion: defined at the very bottom of the file, forward
-// declared here because the audio loop (above) calls them
-void fromFloatToRaw_int(struct pcm_ctx *ctx, char *raw);
-void fromFloatToRaw_float(struct pcm_ctx *ctx, char *raw);
-void fromRawToFloat_int(struct pcm_ctx *ctx, const char *raw);
-void fromRawToFloat_float(struct pcm_ctx *ctx, const char *raw);
 
 // ---------------------------------------------------------------------------
 // device name resolution
@@ -215,13 +198,12 @@ static int resolve_stream_names_dir(const char *cards_xml_path, unsigned int vir
     return 0;
 }
 
-// resolve names for every active direction (playback first; capture iff full duplex)
+// resolve names for both directions (playback first)
 static int resolve_stream_names(struct settings *settings)
 {
     struct pcm_stream *streams[NUM_DIRS] = { &settings->playback, &settings->capture };
-    int dirs = settings->full_duplex ? NUM_DIRS : 1;
 
-    for (int d = 0; d < dirs; d++) {
+    for (int d = 0; d < NUM_DIRS; d++) {
         if (resolve_stream_names_dir(CARDS_CONF_FILE, settings->virtual_card,
                                         settings->physical_card, streams[d]) < 0)
             return -1;
@@ -238,60 +220,21 @@ static int init_ctx_dir(struct pcm_ctx* ctx, struct pcm_stream *stream)
     struct pcm_config *config = &stream->config;
 
     ctx->pcm = nullptr;
-    ctx->audio_buffer = nullptr;
-    ctx->raw_buffer = nullptr;
-
-    /* prepare configuration to open pcm */
-    if (stream->is_float) {
-        config->format = PCM_FORMAT_FLOAT_LE;
-    }
-    else {
-        config->format = signed_pcm_bits_to_format(stream->bits);
-        if (config->format == -1) {
-            fprintf(stderr, "bit count '%u' not supported\n", stream->bits);
-            return -1;
-        }
-    }
-
-    /* prepare context to write to pcm */
-    // size in bytes of the format var type used to store sample
-    ctx->phys_bytes_per_sample = pcm_format_to_bits(config->format) / 8;
-	// different than this, i.e., number of bytes actually used within that format var type!
-	if (config->format == PCM_FORMAT_S24_3LE) { // these vars span 32 bits, but only 24 are actually used! -> 3 bytes
-		ctx->bytes_per_sample = 3;
-    }
-    else {
-		ctx->bytes_per_sample = ctx->phys_bytes_per_sample;
-    }
-    if (!stream->is_float)
-	    ctx->max_value = (1 << (stream->bits - 1)) - 1; //TODO add min value and improve quantization as in LDSP
-
-    ctx->is_float = is_format_float(config->format);
-
     ctx->num_samples = config->period_size * config->channels;
-
     ctx->audio_buffer = (float*)calloc(ctx->num_samples, sizeof(float));
     if ( !(ctx->audio_buffer) ) {
         fprintf(stderr, "unable to allocate %zu bytes\n", ctx->num_samples * sizeof(float));
         return -1;
     }
-
-    ctx->raw_buffer = (char*)calloc(ctx->num_samples, ctx->phys_bytes_per_sample);
-    if ( !(ctx->raw_buffer) ) {
-        fprintf(stderr, "unable to allocate %u bytes\n", ctx->num_samples * ctx->phys_bytes_per_sample);
-        return -1;
-    }
-
     return 0;
 }
 
-// build a runtime context for every active direction
+// build a runtime context for both directions
 static int init_ctx(struct settings *settings, struct pcm_ctx ctx[])
 {
     struct pcm_stream *streams[NUM_DIRS] = { &settings->playback, &settings->capture };
-    int dirs = settings->full_duplex ? NUM_DIRS : 1;
 
-    for (int d = 0; d < dirs; d++)
+    for (int d = 0; d < NUM_DIRS; d++)
         if (init_ctx_dir(&ctx[d], streams[d]) < 0)
             return -1;
     return 0;
@@ -303,8 +246,6 @@ void cleanup_ctx(struct pcm_ctx ctx[])
     for (int d = 0; d < NUM_DIRS; d++) {
         if (ctx[d].audio_buffer != nullptr)
             free(ctx[d].audio_buffer);
-        if (ctx[d].raw_buffer != nullptr)
-            free(ctx[d].raw_buffer);
     }
 }
 
@@ -327,23 +268,12 @@ static int init_pcm_dir(struct pcm_ctx* ctx, struct settings *settings, struct p
         return -1;
     }
 
-    // tinyalsa may round the period up to the plugin's minimum (the stock AGM plugin's
-    // 96-byte minimum means 48 frames), leaving the buffers out of step with the DSP. the
-    // CPU-buffer route never reads or writes the PCM, so there its period does not matter
-    const struct pcm_config *open_config = pcm_get_config(ctx->pcm);
-    if (!settings->cpu_buffer &&
-        (open_config->period_size != stream->config.period_size ||
-         open_config->period_count != stream->config.period_count))
-        fprintf(stderr, "warning: asked for %u x %u frames, the PCM opened with %u x %u (buffer %u)\n",
-                stream->config.period_size, stream->config.period_count,
-                open_config->period_size, open_config->period_count, pcm_get_buffer_size(ctx->pcm));
-
-    // CPU-buffer route: the loop moves whole DMA periods, so the DMA block must be the
-    // period asked for (-p), whatever period the PCM opened with. set it on the playback
-    // and the capture hardware endpoint, before prepare (whole ms on any firmware,
-    // anything else needs the custom Codec DMA build)
-    if (settings->cpu_buffer &&
-        configure_agm_hw_ep_block(stream->frontend_name, stream->backend_name,
+    // the loop moves whole DMA periods, so the DMA block must be the period asked for
+    // (-p). the PCM is never read or written, so the period it opened with does not matter
+    // (the stock AGM plugin rounds it up to 48 frames). set the block on the hardware
+    // endpoint before prepare (whole ms on any firmware, anything else needs the custom
+    // Codec DMA build)
+    if (configure_agm_hw_ep_block(stream->frontend_name, stream->backend_name,
                                   stream->config.period_size, stream->config.rate,
                                   (stream->flags & PCM_IN) != 0) != 0) {
         pcm_close(ctx->pcm);
@@ -356,21 +286,18 @@ static int init_pcm_dir(struct pcm_ctx* ctx, struct settings *settings, struct p
         printf("  direction   %s\n",          (stream->flags & PCM_IN) ? "capture" : "playback");
         printf("  rate        %u Hz\n",       stream->config.rate);
         printf("  channels    %u\n",          stream->config.channels);
-        printf("  format      %u-bit %s\n",   stream->bits, stream->is_float ? "float" : "signed int");
-        printf("  period size %u frames\n",   stream->config.period_size);
-        printf("  periods     %u\n\n",        stream->config.period_count);
+        printf("  block       %u frames\n\n", stream->config.period_size);
     }
 
     return 0;
 }
 
-// open a pcm for every active direction
+// open a pcm for both directions
 static int init_pcm(struct settings *settings, struct pcm_ctx ctx[])
 {
     struct pcm_stream *streams[NUM_DIRS] = { &settings->playback, &settings->capture };
-    int dirs = settings->full_duplex ? NUM_DIRS : 1;
 
-    for (int d = 0; d < dirs; d++)
+    for (int d = 0; d < NUM_DIRS; d++)
         if (init_pcm_dir(&ctx[d], settings, streams[d]) < 0)
             return -1;
     return 0;
@@ -393,28 +320,26 @@ void cleanup_pcm(struct pcm_ctx ctx[])
 // hardware & graph mixer setup (per-direction encapsulation)
 // ---------------------------------------------------------------------------
 
-// apply the hardware mixer path for every active direction (set_hw_mixer_path is
-// re-entrant on the single shared mixer handle, so this works as-is)
+// apply the hardware mixer path for both directions (set_hw_mixer_path is re-entrant on
+// the single shared mixer handle, so this works as-is)
 static int setup_hw_mixer_paths(struct settings *settings)
 {
     struct pcm_stream *streams[NUM_DIRS] = { &settings->playback, &settings->capture };
-    int dirs = settings->full_duplex ? NUM_DIRS : 1;
 
-    for (int d = 0; d < dirs; d++)
+    for (int d = 0; d < NUM_DIRS; d++)
         if (set_hw_mixer_path(streams[d]->mixer_path) < 0)
             return -1;
     return 0;
 }
 
-// build the AGM graph for every active direction. The mixer must already be open
+// build the AGM graph for both directions. The mixer must already be open
 // (init_agm_mixer); setup_agm_mixer_graph records each direction's endpoints so
 // cleanup_agm_mixer can tear both down.
 static int set_agm_mixer_graphs(struct settings *settings)
 {
     struct pcm_stream *streams[NUM_DIRS] = { &settings->playback, &settings->capture };
-    int dirs = settings->full_duplex ? NUM_DIRS : 1;
 
-    for (int d = 0; d < dirs; d++) {
+    for (int d = 0; d < NUM_DIRS; d++) {
         struct pcm_stream *s = streams[d];
 
         if (setup_agm_mixer_graph(s->frontend_name, s->backend_name, (char *)BACKEND_CONF_FILE,
@@ -449,13 +374,12 @@ void sig_handler(int sig)
 // ---------------------------------------------------------------------------
 
 // build the render context: capture samples are the input, playback samples the
-// output. cap is nullptr in playback-only mode (audio_in left null). config: the
-// playback stream's
+// output. config: the playback stream's
 static struct audio_ctx create_audio_ctx(struct pcm_ctx *pb, struct pcm_ctx *cap,
                                          const struct pcm_config *config)
 {
     struct audio_ctx actx = {
-        .audio_in     = cap ? cap->audio_buffer : nullptr,
+        .audio_in     = cap->audio_buffer,
         .audio_out    = pb->audio_buffer,
         .period_size  = config->period_size,
         .channels     = config->channels,
@@ -465,42 +389,19 @@ static struct audio_ctx create_audio_ctx(struct pcm_ctx *pb, struct pcm_ctx *cap
     return actx;
 }
 
-// RW mode: the next playback period is converted into raw_buffer, then written
-static int write_playback_period(struct pcm_ctx *ctx, const struct pcm_config *config)
-{
-    return pcm_writei(ctx->pcm, ctx->raw_buffer, config->period_size);
-}
-
-// RW mode: the next captured period, read into raw_buffer. nullptr on error
-static const char *read_capture_period(struct pcm_ctx *ctx, const struct pcm_config *config)
-{
-    if (pcm_readi(ctx->pcm, ctx->raw_buffer, config->period_size) < 0)
-        return nullptr;
-    return ctx->raw_buffer;
-}
-
-// start the streams back to back, playback first, and enable the echo reference if
-// asked. any delay before the capture start lowers latency and playback slack by the
-// same amount. < 0 on error (playback is stopped again if capture fails to start)
-static int start_streams(struct settings *settings, struct pcm_ctx *pb, struct pcm_ctx *cap)
+// start the streams, playback first. the DSP enables both Codec DMA interfaces together,
+// when the second one starts (sync start). < 0 on error (playback is stopped again if
+// capture fails to start)
+static int start_streams(struct pcm_ctx *pb, struct pcm_ctx *cap)
 {
     if (pcm_start(pb->pcm) < 0) {
         fprintf(stderr, "playback PCM start error: %s (errno=%d)\n", pcm_get_error(pb->pcm), errno);
         return -1;
     }
-    if (cap && pcm_start(cap->pcm) < 0) {
+    if (pcm_start(cap->pcm) < 0) {
         fprintf(stderr, "capture PCM start error: %s (errno=%d)\n", pcm_get_error(cap->pcm), errno);
         pcm_stop(pb->pcm);
         return -1;
-    }
-
-    if (cap && settings->echo_reference) {
-        if (g_verbose)
-            printf("Enabling echo reference path from playback to capture\n");
-        if (set_agm_ecref_path(settings->capture.frontend_name, settings->playback.backend_name, true)) {
-            if (g_verbose)
-                printf("Could not enable echo reference path\n");
-        }
     }
     return 0;
 }
@@ -518,9 +419,9 @@ static void print_hw_ep_start_status(const char *name, const struct hw_ep_start_
     printf(", FIFO errors %u, bus errors %u\n", st->fifo_err_cnt, st->bus_err_cnt);
 }
 
-// prints the last start of the Codec DMA endpoints (custom Codec DMA build), and with
-// capture how far apart the two interfaces started
-static void report_hw_ep_start_status(struct settings *settings, bool full_duplex)
+// prints the last start of the Codec DMA endpoints (custom Codec DMA build), and how far
+// apart the two interfaces started
+static void report_hw_ep_start_status(struct settings *settings)
 {
     struct hw_ep_start_status pb_st = {}, cap_st = {};
 
@@ -528,8 +429,6 @@ static void report_hw_ep_start_status(struct settings *settings, bool full_duple
                                    false, &pb_st) != 0)
         return;
     print_hw_ep_start_status("playback", &pb_st);
-    if (!full_duplex)
-        return;
     if (get_agm_hw_ep_start_status(settings->capture.frontend_name, settings->capture.backend_name,
                                    true, &cap_st) != 0)
         return;
@@ -544,7 +443,7 @@ static void report_hw_ep_start_status(struct settings *settings, bool full_duple
 }
 
 // ---------------------------------------------------------------------------
-// CPU-buffer route (--cpu-buffer)
+// the loop: CPU-buffer route
 // ---------------------------------------------------------------------------
 // the engine works on the Codec DMAs' own double buffers, like Bela: when the capture
 // DMA finishes a period, the loop reads it, renders, and writes the playback period
@@ -662,34 +561,13 @@ static void cpu_buffer_loop(struct settings *settings, struct pcm_ctx *pb, struc
 
 int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
 {
-    int ret = 0;
     struct pcm_ctx *pb = &ctx[DIR_PLAYBACK];
-    struct pcm_ctx *cap = settings->full_duplex ? &ctx[DIR_CAPTURE] : nullptr;
+    struct pcm_ctx *cap = &ctx[DIR_CAPTURE];
 
-    // the CPU-buffer route never reads or writes the PCMs: its periods are the ones asked
-    // for (-p), whatever period the PCMs opened with
-    const struct pcm_config *pb_config = settings->cpu_buffer ? &settings->playback.config
-                                                              : pcm_get_config(pb->pcm);
-    if (pb_config == nullptr) {
-        fprintf(stderr, "unable to get playback pcm config\n");
-        return -1;
-    }
-    const struct pcm_config *cap_config = nullptr;
-    if (cap)
-        cap_config = settings->cpu_buffer ? &settings->capture.config : pcm_get_config(cap->pcm);
-    if (cap && cap_config == nullptr) {
-        fprintf(stderr, "unable to get capture pcm config\n");
-        return -1;
-    }
-    if (cap && cap_config->period_size != pb_config->period_size)
-        fprintf(stderr, "warning: capture/playback period sizes differ (%u vs %u); "
-                        "the combined loop assumes they match\n",
-                cap_config->period_size, pb_config->period_size);
-    if (!settings->cpu_buffer && pb_config->period_count < PLAYBACK_PRIME_PERIODS) {
-        fprintf(stderr, "playback period count %u too small, the pcm is primed with %d periods\n",
-                pb_config->period_count, PLAYBACK_PRIME_PERIODS);
-        return -1;
-    }
+    // the PCMs are never read or written: the periods are the ones asked for (-p),
+    // whatever period the PCMs opened with
+    const struct pcm_config *pb_config = &settings->playback.config;
+    const struct pcm_config *cap_config = &settings->capture.config;
 
     struct audio_ctx actx = create_audio_ctx(pb, cap, pb_config);
 
@@ -697,8 +575,6 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     if (setup(&actx, settings->user_argv)) {
         fprintf(stderr, "setup function failed\n");
         cleanup(&actx, settings->user_argv);
-        pcm_stop(pb->pcm);
-        if (cap) pcm_stop(cap->pcm);
         return -2;
     }
 
@@ -709,58 +585,27 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         cleanup(&actx, settings->user_argv);
         return -1;
     }
-    if (cap && pcm_prepare(cap->pcm) < 0) {
+    if (pcm_prepare(cap->pcm) < 0) {
         fprintf(stderr, "capture PCM prepare error: %s\n", pcm_get_error(cap->pcm));
         cleanup(&actx, settings->user_argv);
         return -1;
     }
 
-    // RW mode: prime playback with silence, so the DSP has data from its first frame on.
-    // the CPU-buffer route writes the DMA buffer itself, which is silent at the start
-    for (int i = 0; !settings->cpu_buffer && i < PLAYBACK_PRIME_PERIODS; i++) {
-        memset(pb->raw_buffer, 0, pb->num_samples * pb->phys_bytes_per_sample);
-        if (write_playback_period(pb, pb_config) < 0) {
-            fprintf(stderr, "playback PCM priming error: %s\n", pcm_get_error(pb->pcm));
-            cleanup(&actx, settings->user_argv);
-            return -1;
-        }
-    }
-
-    // AE_SYNC_START=1 (environment): start the two Codec DMA interfaces together (custom
-    // Codec DMA build). both endpoints join sync-start group 1 for this start only, and
-    // the DSP enables both interfaces when the second one starts
-    // the CPU-buffer route always starts them together
-    const char *sync_env = getenv("AE_SYNC_START");
-    if (settings->cpu_buffer) {
-        if (cpu_buffer_enable(settings) != 0) {
-            fprintf(stderr, "CPU buffer: the Codec DMA endpoints refused CPU-buffer mode or sync start\n");
-            cleanup(&actx, settings->user_argv);
-            return -1;
-        }
-    }
-    else if (cap && sync_env && atoi(sync_env) != 0) {
-        if (set_agm_hw_ep_sync_start(settings->playback.frontend_name, settings->playback.backend_name,
-                                     false, 1, 2) != 0) {
-            fprintf(stderr, "sync start: off, the streams start one after the other\n");
-        }
-        else if (set_agm_hw_ep_sync_start(settings->capture.frontend_name, settings->capture.backend_name,
-                                          true, 1, 2) != 0) {
-            // don't leave playback waiting for a capture endpoint that never joins
-            set_agm_hw_ep_sync_start(settings->playback.frontend_name, settings->playback.backend_name,
-                                     false, 0, 0);
-            fprintf(stderr, "sync start: off, the streams start one after the other\n");
-        }
-    }
-
-    // start the streams; the CPU-buffer route then finds and maps the two DMAs
-    struct cpu_buffer_dma pb_dma = {}, cap_dma = {};
-    struct cpu_buffer_stats cpu_stats = {};
-    if (start_streams(settings, pb, cap) < 0) {
+    // CPU-buffer mode on both Codec DMA endpoints, and sync start
+    if (cpu_buffer_enable(settings) != 0) {
+        fprintf(stderr, "CPU buffer: the Codec DMA endpoints refused CPU-buffer mode or sync start\n");
         cleanup(&actx, settings->user_argv);
         return -1;
     }
-    if (settings->cpu_buffer &&
-        cpu_buffer_map_dmas(settings, pb_config, cap_config, &pb_dma, &cap_dma) != 0) {
+
+    // start the streams, then find and map the two DMAs
+    struct cpu_buffer_dma pb_dma = {}, cap_dma = {};
+    struct cpu_buffer_stats cpu_stats = {};
+    if (start_streams(pb, cap) < 0) {
+        cleanup(&actx, settings->user_argv);
+        return -1;
+    }
+    if (cpu_buffer_map_dmas(settings, pb_config, cap_config, &pb_dma, &cap_dma) != 0) {
         cleanup(&actx, settings->user_argv);
         pcm_stop(cap->pcm);
         pcm_stop(pb->pcm);
@@ -782,44 +627,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
 
     //------------------------
     // actual audio loop
-    if (settings->cpu_buffer) {
-        cpu_buffer_loop(settings, pb, cap, &actx, &pb_dma, &cap_dma, &cpu_stats);
-    }
-    else {
-        // RW mode: capture read -> render -> playback write, in lockstep. in playback-only
-        // mode the capture half is skipped
-        while (!should_stop.load()) {
-            if (cap) {
-                const char *in = read_capture_period(cap, cap_config);
-                if (in == nullptr) {
-                    if (should_stop.load())
-                        break;
-                    fprintf(stderr, "error capturing sample. %s\n", pcm_get_error(cap->pcm));
-                    ret = -3;
-                    break;
-                }
-                if (!cap->is_float)
-                    fromRawToFloat_int(cap, in);
-                else
-                    fromRawToFloat_float(cap, in);
-            }
-
-            // user API function
-            render(&actx, settings->user_argv);
-
-            if (!pb->is_float)
-                fromFloatToRaw_int(pb, pb->raw_buffer);
-            else
-                fromFloatToRaw_float(pb, pb->raw_buffer);
-            if (write_playback_period(pb, pb_config) < 0) {
-                if (should_stop.load())
-                    break;
-                fprintf(stderr, "error playing sample. %s\n", pcm_get_error(pb->pcm));
-                ret = -3;
-                break;
-            }
-        }
-    }
+    cpu_buffer_loop(settings, pb, cap, &actx, &pb_dma, &cap_dma, &cpu_stats);
     //------------------------
 
     // read before anything below makes Linux calls
@@ -833,28 +641,20 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     // DMA build), read while the streams still run
     const char *status_env = getenv("AE_START_STATUS");
     if (status_env && atoi(status_env) != 0)
-        report_hw_ep_start_status(settings, cap != nullptr);
+        report_hw_ep_start_status(settings);
 
     // the DMA registers must not be read once the streams stop
-    if (settings->cpu_buffer) {
-        cpu_buffer_unmap(&pb_dma);
-        cpu_buffer_unmap(&cap_dma);
-    }
+    cpu_buffer_unmap(&pb_dma);
+    cpu_buffer_unmap(&cap_dma);
 
-    if (cap) {
-        if (settings->echo_reference)
-            set_agm_ecref_path(settings->capture.frontend_name, settings->playback.backend_name, false);
-        pcm_stop(cap->pcm);
-    }
+    pcm_stop(cap->pcm);
     pcm_stop(pb->pcm);
 
-    if (settings->cpu_buffer) {
-        if (cpu_stats.late || cpu_stats.skipped)
-            fprintf(stderr, "CPU buffer: %u late and %u skipped playback periods (first at block %llu)\n",
-                    cpu_stats.late, cpu_stats.skipped, (unsigned long long)cpu_stats.first_bad);
-        if (g_verbose)
-            printf("CPU buffer: %llu blocks\n", (unsigned long long)cpu_stats.blocks);
-    }
+    if (cpu_stats.late || cpu_stats.skipped)
+        fprintf(stderr, "CPU buffer: %u late and %u skipped playback periods (first at block %llu)\n",
+                cpu_stats.late, cpu_stats.skipped, (unsigned long long)cpu_stats.first_bad);
+    if (g_verbose)
+        printf("CPU buffer: %llu blocks\n", (unsigned long long)cpu_stats.blocks);
     if (settings->evl) {
         if (evl_isw_start < 0 || evl_isw_end < 0)
             fprintf(stderr, "EVL: could not read the audio thread's in-band switches\n");
@@ -863,7 +663,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
                    evl_isw_end - evl_isw_start);
     }
 
-    return ret;
+    return 0;
 }
 
 struct audio_thread_arg {
@@ -1054,106 +854,4 @@ int main(int argc, char **argv)
     printf("\nAudioReach Audioengine | project: %s exited successfully\n\n", PROJECT_NAME);
 
     return EXIT_SUCCESS;
-}
-
-// ---------------------------------------------------------------------------
-// sample-format conversion (hot path)
-// ---------------------------------------------------------------------------
-
-// float -> signed integer samples of type T, scaled to full scale with one extra step
-// on the negative side (asymmetric signed integer quantization). a plain typed loop,
-// so the compiler can vectorize it. out-of-range values wrap as before, through int32
-template <typename T>
-static void float_to_int(const float *in, T *out, unsigned int n, float max_value)
-{
-    // negatives scale by max_value + 1. adding the comparison as a number, not
-    // selecting with ?:, keeps the loop branch-free so GCC vectorizes it
-    for (unsigned int i = 0; i < n; i++)
-        out[i] = (T)(int32_t)(in[i] * (max_value + (float)(in[i] < 0.0f)));
-}
-
-// inverse of float_to_int: signed integer samples of type T -> normalized float
-template <typename T>
-static void int_to_float(const T *in, float *out, unsigned int n, float max_value)
-{
-    for (unsigned int i = 0; i < n; i++)
-        out[i] = (float)in[i] / max_value;
-}
-
-// audio_buffer -> integer samples in raw (raw_buffer)
-void fromFloatToRaw_int(struct pcm_ctx *ctx, char *raw)
-{
-    const float max_value = (float)ctx->max_value;
-
-    switch (ctx->bytes_per_sample) {
-    case 1:
-        float_to_int(ctx->audio_buffer, (int8_t *)raw, ctx->num_samples, max_value);
-        break;
-    case 2:
-        float_to_int(ctx->audio_buffer, (int16_t *)raw, ctx->num_samples, max_value);
-        break;
-    case 4:
-        float_to_int(ctx->audio_buffer, (int32_t *)raw, ctx->num_samples, max_value);
-        break;
-    default: {
-        // packed formats (S24_3LE): byte by byte. CPU and PCM stream are both
-        // little-endian (see static_assert), so the low bytes_per_sample bytes of
-        // res are already the output bytes
-        unsigned char *sampleBytes = (unsigned char *)raw;
-        for (unsigned int n = 0; n < ctx->num_samples; n++) {
-            unsigned int asymmMaxVal = ctx->max_value + (ctx->audio_buffer[n] < 0);
-            int res = asymmMaxVal * ctx->audio_buffer[n];
-            memcpy(sampleBytes, &res, ctx->bytes_per_sample);
-            sampleBytes += ctx->bytes_per_sample;
-        }
-        break;
-    }
-    }
-    // clean up buffer for next period
-    memset(ctx->audio_buffer, 0, ctx->num_samples*sizeof(float));
-}
-
-void fromFloatToRaw_float(struct pcm_ctx *ctx, char *raw)
-{
-    memcpy(raw, ctx->audio_buffer, ctx->num_samples * sizeof(float));
-    // clean up buffer for next period
-    memset(ctx->audio_buffer, 0, ctx->num_samples*sizeof(float));
-}
-
-// inverse of fromFloatToRaw_int: integer samples in raw -> normalized float
-void fromRawToFloat_int(struct pcm_ctx *ctx, const char *raw)
-{
-    const float max_value = (float)ctx->max_value;
-
-    switch (ctx->bytes_per_sample) {
-    case 1:
-        int_to_float((const int8_t *)raw, ctx->audio_buffer, ctx->num_samples, max_value);
-        break;
-    case 2:
-        int_to_float((const int16_t *)raw, ctx->audio_buffer, ctx->num_samples, max_value);
-        break;
-    case 4:
-        int_to_float((const int32_t *)raw, ctx->audio_buffer, ctx->num_samples, max_value);
-        break;
-    default: {
-        // packed formats (S24_3LE): the sample bytes land in the low end of res
-        // (little-endian, see static_assert), then the arithmetic shift sign-extends
-        const unsigned char *sampleBytes = (const unsigned char *)raw;
-        const int shift = (int)(sizeof(int) - ctx->bytes_per_sample) * 8;
-        for (unsigned int n = 0; n < ctx->num_samples; n++) {
-            int res = 0;
-            memcpy(&res, sampleBytes, ctx->bytes_per_sample);
-            res = (res << shift) >> shift;
-            ctx->audio_buffer[n] = (float)res / max_value;
-            sampleBytes += ctx->bytes_per_sample;
-        }
-        break;
-    }
-    }
-}
-
-// inverse of fromFloatToRaw_float
-void fromRawToFloat_float(struct pcm_ctx *ctx, const char *raw)
-{
-    memcpy(ctx->audio_buffer, raw, ctx->num_samples * sizeof(float));
 }
