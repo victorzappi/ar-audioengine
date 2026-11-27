@@ -328,20 +328,23 @@ static int init_pcm_dir(struct pcm_ctx* ctx, struct settings *settings, struct p
     }
 
     // tinyalsa may round the period up to the plugin's minimum (the stock AGM plugin's
-    // 96-byte minimum means 48 frames), leaving the buffers out of step with the DSP
+    // 96-byte minimum means 48 frames), leaving the buffers out of step with the DSP. the
+    // CPU-buffer route never reads or writes the PCM, so there its period does not matter
     const struct pcm_config *open_config = pcm_get_config(ctx->pcm);
-    if (open_config->period_size != stream->config.period_size ||
-        open_config->period_count != stream->config.period_count)
+    if (!settings->cpu_buffer &&
+        (open_config->period_size != stream->config.period_size ||
+         open_config->period_count != stream->config.period_count))
         fprintf(stderr, "warning: asked for %u x %u frames, the PCM opened with %u x %u (buffer %u)\n",
                 stream->config.period_size, stream->config.period_count,
                 open_config->period_size, open_config->period_count, pcm_get_buffer_size(ctx->pcm));
 
     // CPU-buffer route: the loop moves whole DMA periods, so the DMA block must be the
-    // period. set it on the playback and the capture hardware endpoint, before prepare
-    // (whole ms on any firmware, anything else needs the custom Codec DMA build)
+    // period asked for (-p), whatever period the PCM opened with. set it on the playback
+    // and the capture hardware endpoint, before prepare (whole ms on any firmware,
+    // anything else needs the custom Codec DMA build)
     if (settings->cpu_buffer &&
         configure_agm_hw_ep_block(stream->frontend_name, stream->backend_name,
-                                  open_config->period_size, open_config->rate,
+                                  stream->config.period_size, stream->config.rate,
                                   (stream->flags & PCM_IN) != 0) != 0) {
         pcm_close(ctx->pcm);
         ctx->pcm = nullptr;
@@ -446,11 +449,11 @@ void sig_handler(int sig)
 // ---------------------------------------------------------------------------
 
 // build the render context: capture samples are the input, playback samples the
-// output. cap is nullptr in playback-only mode (audio_in left null).
-static struct audio_ctx create_audio_ctx(struct pcm_ctx *pb, struct pcm_ctx *cap)
+// output. cap is nullptr in playback-only mode (audio_in left null). config: the
+// playback stream's
+static struct audio_ctx create_audio_ctx(struct pcm_ctx *pb, struct pcm_ctx *cap,
+                                         const struct pcm_config *config)
 {
-    const struct pcm_config *config = pcm_get_config(pb->pcm);
-
     struct audio_ctx actx = {
         .audio_in     = cap ? cap->audio_buffer : nullptr,
         .audio_out    = pb->audio_buffer,
@@ -663,12 +666,17 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     struct pcm_ctx *pb = &ctx[DIR_PLAYBACK];
     struct pcm_ctx *cap = settings->full_duplex ? &ctx[DIR_CAPTURE] : nullptr;
 
-    const struct pcm_config *pb_config = pcm_get_config(pb->pcm);
+    // the CPU-buffer route never reads or writes the PCMs: its periods are the ones asked
+    // for (-p), whatever period the PCMs opened with
+    const struct pcm_config *pb_config = settings->cpu_buffer ? &settings->playback.config
+                                                              : pcm_get_config(pb->pcm);
     if (pb_config == nullptr) {
         fprintf(stderr, "unable to get playback pcm config\n");
         return -1;
     }
-    const struct pcm_config *cap_config = cap ? pcm_get_config(cap->pcm) : nullptr;
+    const struct pcm_config *cap_config = nullptr;
+    if (cap)
+        cap_config = settings->cpu_buffer ? &settings->capture.config : pcm_get_config(cap->pcm);
     if (cap && cap_config == nullptr) {
         fprintf(stderr, "unable to get capture pcm config\n");
         return -1;
@@ -683,7 +691,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         return -1;
     }
 
-    struct audio_ctx actx = create_audio_ctx(pb, cap);
+    struct audio_ctx actx = create_audio_ctx(pb, cap, pb_config);
 
     // user API function
     if (setup(&actx, settings->user_argv)) {
