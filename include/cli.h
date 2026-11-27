@@ -45,13 +45,11 @@ struct settings {
     int cpu_affinity;              // CLI -m; unset (no affinity) by default -- see
                                    // CPU_AFFINITY_UNSET in cpu_perf.h
     bool force_performance_governor; // CLI -g; defaults off
-    bool mmap;                     // CLI -M; defaults off. both streams in MMAP mode: the
-                                   // engine reads/writes the DSP's ring buffers directly
     bool evl;                      // CLI --evl; defaults off. the audio thread runs out-of-band
-                                   // under EVL (Xenomai 4); needs mmap
+                                   // under EVL (Xenomai 4); needs cpu_buffer
     bool cpu_buffer;               // CLI --cpu-buffer; defaults off. the engine reads/writes the
                                    // Codec DMA buffers directly, the DSP does nothing per block;
-                                   // needs mmap and full duplex
+                                   // needs full duplex
     bool verbose;                  // CLI --verbose; defaults off (engine prints only
                                     // the startup banner; pass --verbose for full diagnostics)
 

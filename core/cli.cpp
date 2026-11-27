@@ -36,7 +36,6 @@ void init_settings(struct settings *settings)
     settings->echo_reference = false;
     settings->cpu_affinity = CPU_AFFINITY_UNSET;
     settings->force_performance_governor = false;
-    settings->mmap = false;
     settings->evl = false;
     settings->cpu_buffer = false;
     settings->verbose = false;
@@ -163,10 +162,9 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-a | --echo-reference                  Enable the capture<-playback echo reference path (only if capture is active; default off)\n");
     fprintf(stderr, "-m | --cpu-affinity <cpu index>        Pin the audio thread to this 0-based CPU index (default: unset, no affinity)\n");
     fprintf(stderr, "-g | --performance-governor             Force every online CPU's scaling governor to 'performance' for the duration of the audio thread (default off)\n");
-    fprintf(stderr, "-M | --mmap                            MMAP mode: read/write the DSP's shared ring buffers directly (needs Shared Memory Pull/Push Mode graphs; default off)\n");
     fprintf(stderr, "-h | --help                            Print this help and exit\n");
-    fprintf(stderr, "     --evl                              Run the audio thread out-of-band under EVL (Xenomai 4); needs -M and a build with -DEVL=ON (default off)\n");
-    fprintf(stderr, "     --cpu-buffer                       CPU-buffer route: read/write the Codec DMA buffers directly, the DSP does nothing per block; needs -M, full duplex, the custom Codec DMA firmware and the ar_lpass_map module (default off)\n");
+    fprintf(stderr, "     --evl                              Run the audio thread out-of-band under EVL (Xenomai 4); needs --cpu-buffer and a build with -DEVL=ON (default off)\n");
+    fprintf(stderr, "     --cpu-buffer                       CPU-buffer route: read/write the Codec DMA buffers directly, the DSP does nothing per block; needs full duplex, the custom Codec DMA firmware and the ar_lpass_map module (default off)\n");
     fprintf(stderr, "     --verbose                          Print engine diagnostics (device/graph setup, mixer ctls, CPU pinning...); default off, only the startup banner is printed\n");
     fprintf(stderr, "\nAny unrecognized options and trailing arguments are forwarded to the project\n");
     fprintf(stderr, "(as setup/render/cleanup's user_data, argv-style).\n");
@@ -255,7 +253,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         { "echo-reference",          'a', OPTPARSE_NONE     },
         { "cpu-affinity",            'm', OPTPARSE_REQUIRED },
         { "performance-governor",    'g', OPTPARSE_NONE     },
-        { "mmap",                    'M', OPTPARSE_NONE     },
         { "help",                    'h', OPTPARSE_NONE     },
         // playback (lowercase; capture is the same letter upper-cased)
         { "playback-virtual-device", 'd', OPTPARSE_REQUIRED },
@@ -361,12 +358,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
             break;
         case 'g':
             settings->force_performance_governor = true;
-            break;
-        case 'M':
-            // PCM_NOIRQ: the AGM plugin then sets up the Shared Memory Pull/Push Mode endpoints
-            settings->mmap = true;
-            settings->playback.flags |= PCM_MMAP | PCM_NOIRQ;
-            settings->capture.flags |= PCM_MMAP | PCM_NOIRQ;
             break;
         case 'h':
             print_usage(argv[0]);
@@ -644,16 +635,15 @@ int parse_cli(int argc, char **argv, struct settings *settings)
             printf("%s%s", unrecognized[i], (i < n_unrecognized - 1) ? ", " : "\n");
     }
 
-    // the EVL route polls the DSP's ring buffers: RW mode makes Linux system calls
-    // every period
-    if (settings->evl && !settings->mmap) {
-        fprintf(stderr, "--evl needs MMAP mode (-M)\n");
+    // the EVL route polls the Codec DMAs: RW mode makes Linux system calls every period
+    if (settings->evl && !settings->cpu_buffer) {
+        fprintf(stderr, "--evl needs --cpu-buffer\n");
         return -1;
     }
 
-    // the CPU-buffer route opens the MMAP graphs, and the capture DMA paces the loop
-    if (settings->cpu_buffer && (!settings->mmap || !settings->full_duplex)) {
-        fprintf(stderr, "--cpu-buffer needs MMAP mode (-M) and full duplex (no -u)\n");
+    // the capture DMA paces the CPU-buffer loop
+    if (settings->cpu_buffer && !settings->full_duplex) {
+        fprintf(stderr, "--cpu-buffer needs full duplex (no -u)\n");
         return -1;
     }
 

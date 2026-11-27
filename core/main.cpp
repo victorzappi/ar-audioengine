@@ -26,7 +26,6 @@ configure, build and clean commands in CMakeLists.txt
 #include <pthread.h>
 #include <sched.h>
 #include <unistd.h>
-#include <sys/mman.h>
 #include <atomic>
 
 #include "cli.h"
@@ -37,9 +36,6 @@ configure, build and clean commands in CMakeLists.txt
 #include "evl_rt.h"
 #include "cpu_buffer.h"
 #include "render.h"
-#ifdef AR_TIMING
-#include "timing.h"
-#endif
 
 // we assume a little-endian CPU: sample conversion copies the host integer's low
 // bytes straight to/from the (little-endian) PCM stream via memcpy
@@ -58,51 +54,10 @@ enum { DIR_PLAYBACK = 0, DIR_CAPTURE = 1, NUM_DIRS = 2 };
 // one period of slack to render and write each block
 #define PLAYBACK_PRIME_PERIODS 2
 
-// MMAP mode: how many periods the app writes ahead of the DSP. with 1, render()
-// computes the next block while the DSP plays the current one: one period of
-// latency. a period is written only once the DSP has taken the one before it
-#define MMAP_LEAD_PERIODS 1
-
-// MMAP mode: periods of silence in the ring before the start. the DSP takes 2 blocks
-// right at the start (seen from 125 us blocks down), so with 1 the loop began with an
-// underrun. the lead after the start is still MMAP_LEAD_PERIODS, so the latency
-// doesn't change
-#define MMAP_PRIME_PERIODS 2
-
-// ===========================================================================
-// MMAP MODE: PLAYBACK ONLY FOR NOW. FULL DUPLEX IS NOT RELIABLE YET
-//
-// the AGM tinyalsa plugin doesn't implement pcm_link, so playback and capture
-// can't be started together: audio_loop starts them one after the other, and
-// the capture DSP starts a few ms after playback (3.3 ms between the two codec
-// DMAs, measured in RW mode on QLI 2.1). the app starts writing playback right
-// after the primed periods, so that delay comes straight out of the margin
-// between the DSP's read position and the app's write position. when the delay
-// is longer than one period, the loop starts with an underrun and then runs
-// with whatever margin is left. the capture MMAP path is also untested.
-// until this is solved, run MMAP mode with playback only (-u)
-// ===========================================================================
-
-// MMAP mode: between two reads of the position buffers, the audio thread sleeps
-// 1/MMAP_POLL_DIVIDER of a DSP block, or MMAP_POLL_DEFAULT_US until the block size
-// has been measured
-#define MMAP_POLL_DIVIDER 10
-#define MMAP_POLL_DEFAULT_US 100
-// tries to read a consistent position before giving up until the next poll
-#define MMAP_POS_RETRIES 8
-// EVL route (--evl): the audio thread sleeps this long between two reads of the
-// position buffers, out-of-band. it wakes about 1 us late on CPU 7 (latmus), so it
-// reads the position about every 2 us
+// CPU-buffer route with EVL (--cpu-buffer --evl): the audio thread sleeps this long
+// between two reads of the capture DMA's position, out-of-band. it wakes about 1 us late
+// on CPU 7 (latmus), so it reads the position about every 2 us
 #define EVL_POLL_SLEEP_US 1
-
-// layout of the DSP's position buffer (sh_mem_pull_push_mode_position_buffer_t in
-// AudioReach's sh_mem_pull_push_mode_api.h), rewritten by the DSP at every DSP block
-struct sh_mem_pos_buf {
-    volatile uint32_t frame_counter;     // +1 per update; 0 while the DSP is writing
-    volatile uint32_t index;             // DSP read (playback) / write (capture) offset in the ring, bytes
-    volatile uint32_t timestamp_us_lsw;
-    volatile uint32_t timestamp_us_msw;
-};
 
 struct pcm_ctx {
     struct pcm *pcm;
@@ -113,28 +68,6 @@ struct pcm_ctx {
     unsigned int num_samples;
     float *audio_buffer;
     char *raw_buffer;
-
-    // MMAP mode only: the DSP's ring and position buffers mapped in this process,
-    // and how many frames the app and the DSP have moved through the ring so far
-    char *ring;
-    size_t ring_map_bytes;
-    struct sh_mem_pos_buf *pos_buf;
-    size_t pos_map_bytes;
-    unsigned int frame_bytes;
-    unsigned int ring_frames;
-    unsigned int ring_bytes;
-    uint64_t appl_frames;           // written (playback) or read (capture) by the app
-    uint64_t dsp_frames;            // read (playback) or written (capture) by the DSP
-    uint32_t last_counter;
-    uint32_t last_index;
-    unsigned int dsp_block_frames;  // measured from the position buffer; 0 until known
-    bool block_mismatch;            // the measured DSP block is not the period
-    unsigned int xruns;
-    uint64_t first_xrun_dsp;        // dsp_frames and appl_frames at the first xrun
-    uint64_t first_xrun_appl;
-#ifdef AR_TIMING
-    struct block_timing timing;     // -DTIMING=ON builds only
-#endif
 };
 
 std::atomic_int should_stop(0);
@@ -145,7 +78,7 @@ std::atomic_int should_stop(0);
 static bool g_verbose = false;
 
 // EVL route (--evl): set once in main(), after EVL has been found. file-scope so
-// the MMAP poll sleep can read it
+// the CPU-buffer loop can read it
 static bool g_evl = false;
 
 // hot-path sample conversion: defined at the very bottom of the file, forward
@@ -375,62 +308,6 @@ void cleanup_ctx(struct pcm_ctx ctx[])
     }
 }
 
-// MMAP mode: map the DSP's ring and position buffers, which the AGM plugin got from
-// AGM when the pcm was opened. AGM's session id is the virtual device number. the
-// fds stay AGM's: they are not closed here
-static int map_mmap_buffers(struct pcm_ctx *ctx, struct pcm_stream *stream)
-{
-    struct agm_buf_info buf_info = {};
-
-    if (agm_session_get_buf_info(stream->virtual_device, &buf_info, DATA_BUF | POS_BUF)) {
-        fprintf(stderr, "failed to get the MMAP buffers of virtual device %u\n", stream->virtual_device);
-        return -1;
-    }
-
-    ctx->frame_bytes = pcm_frames_to_bytes(ctx->pcm, 1);
-    ctx->ring_frames = pcm_get_buffer_size(ctx->pcm);
-    ctx->ring_bytes = ctx->ring_frames * ctx->frame_bytes;
-    if ((unsigned int)buf_info.data_buf_size < ctx->ring_bytes) {
-        fprintf(stderr, "MMAP ring buffer is %d bytes, expected at least %u\n",
-                buf_info.data_buf_size, ctx->ring_bytes);
-        return -1;
-    }
-
-    void *ring = mmap(nullptr, buf_info.data_buf_size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                      buf_info.data_buf_fd, 0);
-    if (ring == MAP_FAILED) {
-        fprintf(stderr, "failed to map the MMAP ring buffer: %s\n", strerror(errno));
-        return -1;
-    }
-    void *pos = mmap(nullptr, buf_info.pos_buf_size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                     buf_info.pos_buf_fd, 0);
-    if (pos == MAP_FAILED) {
-        fprintf(stderr, "failed to map the MMAP position buffer: %s\n", strerror(errno));
-        munmap(ring, buf_info.data_buf_size);
-        return -1;
-    }
-
-    ctx->ring = (char *)ring;
-    ctx->ring_map_bytes = buf_info.data_buf_size;
-    ctx->pos_buf = (struct sh_mem_pos_buf *)pos;
-    ctx->pos_map_bytes = buf_info.pos_buf_size;
-
-    if (g_verbose)
-        printf("MMAP ring buffer: %u frames (%u bytes), position buffer: %d bytes\n",
-               ctx->ring_frames, ctx->ring_bytes, buf_info.pos_buf_size);
-    return 0;
-}
-
-static void unmap_mmap_buffers(struct pcm_ctx *ctx)
-{
-    if (ctx->ring != nullptr)
-        munmap(ctx->ring, ctx->ring_map_bytes);
-    if (ctx->pos_buf != nullptr)
-        munmap((void *)ctx->pos_buf, ctx->pos_map_bytes);
-    ctx->ring = nullptr;
-    ctx->pos_buf = nullptr;
-}
-
 static int init_pcm_dir(struct pcm_ctx* ctx, struct settings *settings, struct pcm_stream *stream)
 {
     // we cannot check the param ranges on the frontend, because it's a virtual pcm!
@@ -459,20 +336,13 @@ static int init_pcm_dir(struct pcm_ctx* ctx, struct settings *settings, struct p
                 stream->config.period_size, stream->config.period_count,
                 open_config->period_size, open_config->period_count, pcm_get_buffer_size(ctx->pcm));
 
-    // MMAP mode: the loop and the DSP exchange whole periods of the ring, so the DSP block
-    // must be the period. set the hardware endpoint's block from it, for playback and
-    // capture, before prepare (whole ms on any firmware, anything else needs the custom
-    // Codec DMA build)
-    if ((stream->flags & PCM_MMAP) &&
+    // CPU-buffer route: the loop moves whole DMA periods, so the DMA block must be the
+    // period. set it on the playback and the capture hardware endpoint, before prepare
+    // (whole ms on any firmware, anything else needs the custom Codec DMA build)
+    if (settings->cpu_buffer &&
         configure_agm_hw_ep_block(stream->frontend_name, stream->backend_name,
                                   open_config->period_size, open_config->rate,
                                   (stream->flags & PCM_IN) != 0) != 0) {
-        pcm_close(ctx->pcm);
-        ctx->pcm = nullptr;
-        return -1;
-    }
-
-    if ((stream->flags & PCM_MMAP) && map_mmap_buffers(ctx, stream) < 0) {
         pcm_close(ctx->pcm);
         ctx->pcm = nullptr;
         return -1;
@@ -509,7 +379,6 @@ void cleanup_pcm(struct pcm_ctx ctx[])
     if (g_verbose)
         printf("pcm_cleanup\n");
     for (int d = 0; d < NUM_DIRS; d++) {
-        unmap_mmap_buffers(&ctx[d]);
         if (ctx[d].pcm != nullptr) {
             pcm_close(ctx[d].pcm);
             ctx[d].pcm = nullptr;
@@ -593,167 +462,20 @@ static struct audio_ctx create_audio_ctx(struct pcm_ctx *pb, struct pcm_ctx *cap
     return actx;
 }
 
-// MMAP mode: read the DSP's position and advance dsp_frames. the fields are valid
-// only if frame_counter is non-zero and unchanged across the read. the buffers are
-// cache-coherent with the DSP on the QCS6490 (measured), so plain reads see its updates
-static void mmap_update_dsp_pos(struct pcm_ctx *ctx)
+// RW mode: the next playback period is converted into raw_buffer, then written
+static int write_playback_period(struct pcm_ctx *ctx, const struct pcm_config *config)
 {
-    const unsigned int period_frames = pcm_get_config(ctx->pcm)->period_size;
-    uint32_t counter, index;
-#ifdef AR_TIMING
-    uint32_t ts_lsw, ts_msw;
-#endif
-
-    for (int retry = 0; ; retry++) {
-        counter = ctx->pos_buf->frame_counter;
-        std::atomic_thread_fence(std::memory_order_acquire);
-        index = ctx->pos_buf->index;
-#ifdef AR_TIMING
-        ts_lsw = ctx->pos_buf->timestamp_us_lsw;
-        ts_msw = ctx->pos_buf->timestamp_us_msw;
-#endif
-        std::atomic_thread_fence(std::memory_order_acquire);
-        if (counter != 0 && counter == ctx->pos_buf->frame_counter)
-            break;
-        if (retry == MMAP_POS_RETRIES)
-            return;  // the DSP is mid-update: read again at the next poll
-    }
-    if (counter == ctx->last_counter)
-        return;
-
-    uint32_t blocks = counter - ctx->last_counter;
-#ifdef AR_TIMING
-    timing_update_seen(&ctx->timing, timing_now_ns(), counter, blocks,
-                       ((uint64_t)ts_msw << 32) | ts_lsw);
-#endif
-    unsigned int frames = ((index + ctx->ring_bytes - ctx->last_index) % ctx->ring_bytes) / ctx->frame_bytes;
-    // the index wraps at every lap of the ring, so after a sleep of a lap or more
-    // only the block count tells how far the DSP went
-    // with a ring of 2 blocks a step of 2 or more blocks can wrap the index too, so
-    // the block is measured only from a single-block step; until then it is taken
-    // to be the period
-    if (ctx->dsp_block_frames == 0 && blocks == 1) {
-        ctx->dsp_block_frames = frames;
-        // the loop moves whole periods: with another DSP block it can only play wrongly
-        if (frames != period_frames) {
-            ctx->block_mismatch = true;
-            should_stop = 1;
-        }
-    }
-    if (ctx->dsp_block_frames == 0)
-        frames = blocks * period_frames;
-    else if (frames != blocks * ctx->dsp_block_frames)
-        frames = blocks * ctx->dsp_block_frames;
-
-    ctx->dsp_frames += frames;
-    ctx->last_counter = counter;
-    ctx->last_index = index;
-}
-
-// MMAP mode: sleep between two reads of the position buffer
-static void mmap_poll_sleep(const struct pcm_ctx *ctx, unsigned int rate)
-{
-    if (g_evl) {
-        evl_rt_usleep(EVL_POLL_SLEEP_US);
-        return;
-    }
-
-    unsigned int us = MMAP_POLL_DEFAULT_US;
-    if (ctx->dsp_block_frames != 0)
-        us = (unsigned int)((uint64_t)ctx->dsp_block_frames * 1000000 / rate / MMAP_POLL_DIVIDER);
-    usleep(us > 0 ? us : 1);
-}
-
-// MMAP mode: wait until the app is less than MMAP_LEAD_PERIODS ahead of the DSP,
-// i.e. the DSP has taken the period before this one, and return this period's slot.
-// nullptr if asked to stop while waiting
-static char *mmap_playback_slot(struct pcm_ctx *ctx, const struct pcm_config *config)
-{
-    for (;;) {
-        mmap_update_dsp_pos(ctx);
-        if (ctx->dsp_frames > ctx->appl_frames) {
-            // underrun: the DSP took ring frames the app had not written yet.
-            // resume at the first period boundary the DSP has not reached yet
-            if (ctx->xruns == 0) {
-                ctx->first_xrun_dsp = ctx->dsp_frames;
-                ctx->first_xrun_appl = ctx->appl_frames;
-            }
-            ctx->xruns++;
-            ctx->appl_frames = (ctx->dsp_frames + config->period_size - 1) /
-                               config->period_size * config->period_size;
-        }
-        if (ctx->appl_frames + config->period_size <=
-            ctx->dsp_frames + MMAP_LEAD_PERIODS * config->period_size)
-            break;
-        if (should_stop.load())
-            return nullptr;
-        mmap_poll_sleep(ctx, config->rate);
-    }
-
-    // the ring holds a whole number of periods, so a period never wraps around its end
-    return ctx->ring + (ctx->appl_frames % ctx->ring_frames) * ctx->frame_bytes;
-}
-
-// MMAP mode: wait until the DSP has recorded a whole period past what the app read,
-// and return that period's slot. nullptr if asked to stop while waiting
-static const char *mmap_capture_slot(struct pcm_ctx *ctx, const struct pcm_config *config)
-{
-    for (;;) {
-        mmap_update_dsp_pos(ctx);
-        if (ctx->dsp_frames > ctx->appl_frames + ctx->ring_frames) {
-            // overrun: the DSP overwrote ring frames the app had not read.
-            // resume at the oldest period boundary still in the ring
-            ctx->xruns++;
-            ctx->appl_frames = ((ctx->dsp_frames - ctx->ring_frames) / config->period_size + 1) *
-                               config->period_size;
-        }
-        if (ctx->appl_frames + config->period_size <= ctx->dsp_frames)
-            break;
-        if (should_stop.load())
-            return nullptr;
-        mmap_poll_sleep(ctx, config->rate);
-    }
-
-    return ctx->ring + (ctx->appl_frames % ctx->ring_frames) * ctx->frame_bytes;
-}
-
-// where the next playback period is converted to: raw_buffer, which pcm_writei sends
-// on in commit_playback_period, or in MMAP mode the period's slot in the ring.
-// nullptr if asked to stop while waiting for a free slot
-static char *playback_period(struct pcm_ctx *ctx, const struct pcm_config *config, bool mmap)
-{
-    return mmap ? mmap_playback_slot(ctx, config) : ctx->raw_buffer;
-}
-
-// hand the converted playback period to the DSP. < 0 on error
-static int commit_playback_period(struct pcm_ctx *ctx, const struct pcm_config *config, bool mmap)
-{
-    if (mmap) {
-        ctx->appl_frames += config->period_size;
-        return 0;
-    }
     return pcm_writei(ctx->pcm, ctx->raw_buffer, config->period_size);
 }
 
-// the next captured period: read into raw_buffer, or in MMAP mode in place in the
-// ring until release_capture_period. nullptr on error, or when asked to stop (MMAP)
-static const char *capture_period(struct pcm_ctx *ctx, const struct pcm_config *config, bool mmap)
+// RW mode: the next captured period, read into raw_buffer. nullptr on error
+static const char *read_capture_period(struct pcm_ctx *ctx, const struct pcm_config *config)
 {
-    if (mmap)
-        return mmap_capture_slot(ctx, config);
     if (pcm_readi(ctx->pcm, ctx->raw_buffer, config->period_size) < 0)
         return nullptr;
     return ctx->raw_buffer;
 }
 
-static void release_capture_period(struct pcm_ctx *ctx, const struct pcm_config *config, bool mmap)
-{
-    if (mmap)
-        ctx->appl_frames += config->period_size;
-}
-
-// single combined real-time loop: capture read -> render -> playback write,
-// in lockstep. In playback-only mode the capture half is skipped.
 // start the streams back to back, playback first, and enable the echo reference if
 // asked. any delay before the capture start lowers latency and playback slack by the
 // same amount. < 0 on error (playback is stopped again if capture fails to start)
@@ -816,52 +538,6 @@ static void report_hw_ep_start_status(struct settings *settings, bool full_duple
         printf(", first DMA interrupt %+lld us",
                (long long)(cap_st.first_intr_ts_us - pb_st.first_intr_ts_us));
     printf("\n");
-}
-
-// MMAP mode: pcm_start() returns only once the speaker path is up, about 0.1 ms after
-// the DSP has begun taking blocks at its regular pace. until the loop watches the
-// position buffer, the DSP can only take the primed periods, and with blocks of 2-3
-// frames that is more than the ring holds. so a helper thread starts the streams while
-// the audio thread already waits in the loop
-struct start_streams_arg {
-    struct settings *settings;
-    struct pcm_ctx *pb;
-    struct pcm_ctx *cap;
-    int ret;
-};
-
-static void *start_streams_thread(void *arg)
-{
-    struct start_streams_arg *a = (struct start_streams_arg *)arg;
-
-    a->ret = start_streams(a->settings, a->pb, a->cap);
-    if (a->ret < 0)
-        should_stop = 1;  // the loop is waiting for the DSP: let it out
-    return nullptr;
-}
-
-// the helper is a normal thread on the CPUs other than the audio thread's: it inherits
-// neither the audio thread's SCHED_FIFO priority nor its CPU
-static int create_start_streams_thread(pthread_t *thread, struct start_streams_arg *arg, int audio_cpu)
-{
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
-    pthread_attr_setschedpolicy(&attr, SCHED_OTHER);
-    struct sched_param param = {};
-    pthread_attr_setschedparam(&attr, &param);
-    if (audio_cpu != CPU_AFFINITY_UNSET) {
-        cpu_set_t cpus;
-        CPU_ZERO(&cpus);
-        long num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
-        for (long c = 0; c < num_cpus; c++)
-            if (c != audio_cpu)
-                CPU_SET(c, &cpus);
-        pthread_attr_setaffinity_np(&attr, sizeof(cpus), &cpus);
-    }
-    int rc = pthread_create(thread, &attr, start_streams_thread, arg);
-    pthread_attr_destroy(&attr);
-    return rc;
 }
 
 // ---------------------------------------------------------------------------
@@ -1001,10 +677,9 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         fprintf(stderr, "warning: capture/playback period sizes differ (%u vs %u); "
                         "the combined loop assumes they match\n",
                 cap_config->period_size, pb_config->period_size);
-    const int prime_periods = settings->mmap ? MMAP_PRIME_PERIODS : PLAYBACK_PRIME_PERIODS;
-    if (pb_config->period_count < (unsigned int)prime_periods) {
+    if (!settings->cpu_buffer && pb_config->period_count < PLAYBACK_PRIME_PERIODS) {
         fprintf(stderr, "playback period count %u too small, the pcm is primed with %d periods\n",
-                pb_config->period_count, prime_periods);
+                pb_config->period_count, PLAYBACK_PRIME_PERIODS);
         return -1;
     }
 
@@ -1032,24 +707,11 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         return -1;
     }
 
-#ifdef AR_TIMING
-    timing_init(&pb->timing);
-    if (cap)
-        timing_init(&cap->timing);
-#endif
-
-    // prime playback with silence, so the DSP has data from its first frame on.
-    // MMAP mode writes the ring directly: playback_period() would wait for the DSP
-    // to take a period before handing out the slot past the lead
-    if (settings->mmap && !settings->cpu_buffer) {
-        memset(pb->ring, 0, (size_t)prime_periods * pb_config->period_size * pb->frame_bytes);
-        pb->appl_frames = (uint64_t)prime_periods * pb_config->period_size;
-    }
-    for (int i = 0; i < prime_periods && !settings->mmap; i++) {
-        char *out = playback_period(pb, pb_config, settings->mmap);
-        if (out != nullptr)
-            memset(out, 0, pb->num_samples * pb->phys_bytes_per_sample);
-        if (out == nullptr || commit_playback_period(pb, pb_config, settings->mmap) < 0) {
+    // RW mode: prime playback with silence, so the DSP has data from its first frame on.
+    // the CPU-buffer route writes the DMA buffer itself, which is silent at the start
+    for (int i = 0; !settings->cpu_buffer && i < PLAYBACK_PRIME_PERIODS; i++) {
+        memset(pb->raw_buffer, 0, pb->num_samples * pb->phys_bytes_per_sample);
+        if (write_playback_period(pb, pb_config) < 0) {
             fprintf(stderr, "playback PCM priming error: %s\n", pcm_get_error(pb->pcm));
             cleanup(&actx, settings->user_argv);
             return -1;
@@ -1082,37 +744,20 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         }
     }
 
-    // MMAP mode starts the streams from a helper thread, so the loop below already
-    // watches the DSP when it starts taking blocks (see start_streams_thread). the
-    // CPU-buffer route has no DSP to keep up with: it starts them here, then maps the DMAs
-    struct start_streams_arg start_arg = { settings, pb, cap, 0 };
-    pthread_t start_thread;
+    // start the streams; the CPU-buffer route then finds and maps the two DMAs
     struct cpu_buffer_dma pb_dma = {}, cap_dma = {};
     struct cpu_buffer_stats cpu_stats = {};
-    if (settings->cpu_buffer) {
-        if (start_streams(settings, pb, cap) < 0) {
-            cleanup(&actx, settings->user_argv);
-            return -1;
-        }
-        if (cpu_buffer_map_dmas(settings, pb_config, cap_config, &pb_dma, &cap_dma) != 0) {
-            cleanup(&actx, settings->user_argv);
-            pcm_stop(cap->pcm);
-            pcm_stop(pb->pcm);
-            return -1;
-        }
-    }
-    else if (settings->mmap) {
-        if (create_start_streams_thread(&start_thread, &start_arg, settings->cpu_affinity) != 0) {
-            fprintf(stderr, "could not create the stream start thread\n");
-            cleanup(&actx, settings->user_argv);
-            return -1;
-        }
-    }
-    else if (start_streams(settings, pb, cap) < 0) {
+    if (start_streams(settings, pb, cap) < 0) {
         cleanup(&actx, settings->user_argv);
         return -1;
     }
-
+    if (settings->cpu_buffer &&
+        cpu_buffer_map_dmas(settings, pb_config, cap_config, &pb_dma, &cap_dma) != 0) {
+        cleanup(&actx, settings->user_argv);
+        pcm_stop(cap->pcm);
+        pcm_stop(pb->pcm);
+        return -1;
+    }
 
     // catch ctrl-c to shutdown cleanly
     signal(SIGINT, sig_handler);
@@ -1129,92 +774,48 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
 
     //------------------------
     // actual audio loop
-    if (settings->cpu_buffer)
+    if (settings->cpu_buffer) {
         cpu_buffer_loop(settings, pb, cap, &actx, &pb_dma, &cap_dma, &cpu_stats);
-    while (!settings->cpu_buffer && !should_stop.load()) {
-        // playback only, MMAP mode: wait for the DSP to take the current block before
-        // rendering the next one, so that render() runs while the DSP plays the
-        // current block. with capture, the capture wait below paces the loop instead
-        char *out = nullptr;
-        if (!cap && settings->mmap) {
-            out = playback_period(pb, pb_config, settings->mmap);
-            if (out == nullptr)
-                break;  // asked to stop while waiting
-        }
+    }
+    else {
+        // RW mode: capture read -> render -> playback write, in lockstep. in playback-only
+        // mode the capture half is skipped
+        while (!should_stop.load()) {
+            if (cap) {
+                const char *in = read_capture_period(cap, cap_config);
+                if (in == nullptr) {
+                    if (should_stop.load())
+                        break;
+                    fprintf(stderr, "error capturing sample. %s\n", pcm_get_error(cap->pcm));
+                    ret = -3;
+                    break;
+                }
+                if (!cap->is_float)
+                    fromRawToFloat_int(cap, in);
+                else
+                    fromRawToFloat_float(cap, in);
+            }
 
-        if (cap) {
-            const char *in = capture_period(cap, cap_config, settings->mmap);
-            if (in == nullptr) {
+            // user API function
+            render(&actx, settings->user_argv);
+
+            if (!pb->is_float)
+                fromFloatToRaw_int(pb, pb->raw_buffer);
+            else
+                fromFloatToRaw_float(pb, pb->raw_buffer);
+            if (write_playback_period(pb, pb_config) < 0) {
                 if (should_stop.load())
                     break;
-                fprintf(stderr, "error capturing sample. %s\n", pcm_get_error(cap->pcm));
+                fprintf(stderr, "error playing sample. %s\n", pcm_get_error(pb->pcm));
                 ret = -3;
                 break;
             }
-            if (!cap->is_float)
-                fromRawToFloat_int(cap, in);
-            else
-                fromRawToFloat_float(cap, in);
-            release_capture_period(cap, cap_config, settings->mmap);
         }
-
-        // user API function
-#ifdef AR_TIMING
-        int64_t render_start_ns = timing_now_ns();
-#endif
-        render(&actx, settings->user_argv);
-#ifdef AR_TIMING
-        int64_t render_end_ns = timing_now_ns();
-#endif
-
-        // in MMAP mode this waits for the DSP to take the current block, unless done
-        // above; the next one is converted directly into its slot in the ring
-        if (out == nullptr) {
-            out = playback_period(pb, pb_config, settings->mmap);
-            if (out == nullptr)
-                break;  // asked to stop while waiting
-        }
-#ifdef AR_TIMING
-        int64_t convert_start_ns = timing_now_ns();
-#endif
-        if (!pb->is_float)
-            fromFloatToRaw_int(pb, out);
-        else
-            fromFloatToRaw_float(pb, out);
-#ifdef AR_TIMING
-        int64_t convert_end_ns = timing_now_ns();
-#endif
-
-        if (commit_playback_period(pb, pb_config, settings->mmap) < 0) {
-            if (should_stop.load())
-                break;
-            fprintf(stderr, "error playing sample. %s\n", pcm_get_error(pb->pcm));
-            ret = -3;
-            break;
-        }
-#ifdef AR_TIMING
-        if (settings->mmap && pb->dsp_block_frames != 0) {
-            // the clock first, so that the position read below is not in the work time
-            int64_t written_ns = timing_now_ns();
-            timing_write_done(&pb->timing, written_ns, pb->pos_buf->frame_counter,
-                              (uint32_t)((pb->appl_frames - pb->dsp_frames) / pb->dsp_block_frames));
-            timing_steps(&pb->timing, render_end_ns - render_start_ns,
-                         convert_end_ns - convert_start_ns);
-            if (cap)
-                timing_flush(&cap->timing);
-        }
-#endif
     }
     //------------------------
 
     // read before anything below makes Linux calls
     long evl_isw_end = settings->evl ? evl_rt_inband_switches() : 0;
-
-    if (settings->mmap && !settings->cpu_buffer) {
-        pthread_join(start_thread, nullptr);
-        if (start_arg.ret < 0)
-            ret = -1;
-    }
 
     // user API function
     cleanup(&actx, settings->user_argv);
@@ -1246,22 +847,6 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
         if (g_verbose)
             printf("CPU buffer: %llu blocks\n", (unsigned long long)cpu_stats.blocks);
     }
-    else if (settings->mmap) {
-        if (pb->block_mismatch || (cap && cap->block_mismatch)) {
-            struct pcm_ctx *bad = pb->block_mismatch ? pb : cap;
-            fprintf(stderr, "MMAP %s: the DSP block is %u frames, not the period (%u frames)\n",
-                    bad == pb ? "playback" : "capture", bad->dsp_block_frames, pb_config->period_size);
-            ret = -1;
-        }
-        if (pb->xruns)
-            fprintf(stderr, "MMAP playback underruns: %u (first at DSP frame %llu, app frame %llu)\n",
-                    pb->xruns, (unsigned long long)pb->first_xrun_dsp, (unsigned long long)pb->first_xrun_appl);
-        if (cap && cap->xruns)
-            fprintf(stderr, "MMAP capture overruns: %u\n", cap->xruns);
-        if (g_verbose)
-            printf("MMAP DSP block: %u frames, played by the DSP: %llu frames\n",
-                   pb->dsp_block_frames, (unsigned long long)pb->dsp_frames);
-    }
     if (settings->evl) {
         if (evl_isw_start < 0 || evl_isw_end < 0)
             fprintf(stderr, "EVL: could not read the audio thread's in-band switches\n");
@@ -1269,13 +854,6 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
             printf("EVL: audio thread switched to in-band %ld times during the loop\n",
                    evl_isw_end - evl_isw_start);
     }
-#ifdef AR_TIMING
-    if (settings->mmap && !settings->cpu_buffer) {
-        timing_report(&pb->timing, "playback");
-        if (cap)
-            timing_report(&cap->timing, "capture");
-    }
-#endif
 
     return ret;
 }
@@ -1494,8 +1072,7 @@ static void int_to_float(const T *in, float *out, unsigned int n, float max_valu
         out[i] = (float)in[i] / max_value;
 }
 
-// audio_buffer -> integer samples in raw, which is raw_buffer or, in MMAP mode, the
-// period's slot in the ring
+// audio_buffer -> integer samples in raw (raw_buffer)
 void fromFloatToRaw_int(struct pcm_ctx *ctx, char *raw)
 {
     const float max_value = (float)ctx->max_value;

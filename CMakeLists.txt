@@ -17,9 +17,6 @@
 #   (needs the libevl headers; libevl itself is loaded at run time):
 #   -DEVL=ON
 #
-# __to compile in the per-block timing measurement of the MMAP loop (test tool):
-#   -DTIMING=ON
-#
 #_Build [bin in build]
 # cmake --build build
 #
@@ -196,14 +193,6 @@ if(EVL)
     target_link_libraries(ar_audioengine PRIVATE ${CMAKE_DL_LIBS})
 endif()
 message(STATUS "EVL route (EVL):                  ${EVL}")
-
-# per-block timing of the MMAP loop: a test tool, off by default (see timing.h)
-option(TIMING "Compile in the per-block timing measurement of the MMAP loop" OFF)
-if(TIMING)
-    target_sources(ar_audioengine PRIVATE core/timing.cpp)
-    target_compile_definitions(ar_audioengine PRIVATE AR_TIMING)
-endif()
-message(STATUS "Timing measurement (TIMING):      ${TIMING}")
 #-------------------------------------------------------------------------
 
 
@@ -217,7 +206,6 @@ target_link_libraries(ar_audioengine
     PRIVATE dependencies
     PRIVATE libraries
     PRIVATE tinyalsa expat pthread
-    PRIVATE agm  # agm_session_get_buf_info, for MMAP mode
 )
 #-------------------------------------------------------------------------
 
