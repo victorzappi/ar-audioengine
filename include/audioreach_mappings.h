@@ -310,6 +310,7 @@ static const KeyMapping tags_map[] = {
     { 0xC000004B, "TAG_MODULE_TSM" },
     { 0xC0000040, "TAG_DEVICE_MUX" },
     { 0xC0000004, "DEVICE_HW_ENDPOINT_RX" },
+    { 0xC0000005, "DEVICE_HW_ENDPOINT_TX" },
     { 0xC0000019, "PER_STREAM_PER_DEVICE_MFC" },
 };
 
