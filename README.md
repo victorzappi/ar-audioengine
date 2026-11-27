@@ -177,9 +177,13 @@ systemctl --user stop pulseaudio.socket pulseaudio.service
 
 The engine always runs full duplex: the capture DMA paces the loop. Most options come in
 playback and capture variants, using a case-symmetric convention: playback is the
-lowercase letter, capture is the same letter upper-cased (e.g. `-n`/`-N` for channels).
-The block (`-p`) and the rate (`-r`) are the same for both streams. The defaults are for
-the RB3 Gen 2 on QLI 2.1 with the stock ACDB.
+lowercase letter, capture is the same letter upper-cased (e.g. `-w`/`-W` for the stream
+graph key). The block (`-p`) is the same for both streams. The defaults are for the RB3
+Gen 2 on QLI 2.1 with the stock ACDB.
+
+Each stream's channel count and rate are not options: they come from the backend config
+(`/etc/backend_conf.xml`, or `-DBACKEND_CONF_FILE` at build time), which is the format
+the Codec DMAs run in. Both backends must have the same rate.
 
 #### Shared
 
@@ -188,7 +192,6 @@ the RB3 Gen 2 on QLI 2.1 with the stock ACDB.
 | `-c`, `--virtual-card` | Virtual card number | `100` |
 | `-s`, `--physical-card` | Physical card number | `0` |
 | `-p`, `--period-size` | The block: frames per Codec DMA period, both streams | `960` |
-| `-r`, `--rate` | Sample rate, both streams (the Codec DMAs' rate) | `48000` |
 | `-m`, `--cpu-affinity` | Pin the audio thread to this 0-based CPU index | unset (no affinity) |
 | `-g`, `--performance-governor` | Force every online CPU's scaling governor to `performance` for the run, restored on exit | `off` |
 | `--evl` | Run the audio thread out-of-band under EVL (Xenomai 4); needs a build with `-DEVL=ON` | `off` |
@@ -214,7 +217,6 @@ PCM config, mixer ctl and graph setup, CPU pinning/governor changes, the DMAs).
 | `-e`, `--playback-physical-device` | Physical device number | `0` (`CODEC_DMA-LPAIF_WSA-RX-0`) |
 | `-t`, `--playback-frontend-name` | Frontend device name | auto |
 | `-k`, `--playback-backend-name` | Backend device name | auto |
-| `-n`, `--playback-channels` | Number of channels: the playback DMA's | `2` |
 | `-o`, `--playback-path` | Hardware mixer playback path | `speaker` |
 | `-w`, `--streamrx` | Stream graph key value | `PCM_LL_PLAYBACK` |
 | `-x`, `--streampp-rx` | Stream PP graph key value | `0` |
@@ -230,7 +232,6 @@ PCM config, mixer ctl and graph setup, CPU pinning/governor changes, the DMAs).
 | `-E`, `--capture-physical-device` | Physical device number | `1` (`CODEC_DMA-LPAIF_VA-TX-0`) |
 | `-T`, `--capture-frontend-name` | Frontend device name | auto |
 | `-K`, `--capture-backend-name` | Backend device name | auto |
-| `-N`, `--capture-channels` | Number of channels: the capture DMA's | `1` |
 | `-O`, `--capture-path` | Hardware mixer capture path | `speaker-mic` |
 | `-W`, `--streamtx` | Stream graph key value | `RAW_RECORD` |
 | `-X`, `--streampp-tx` | Stream PP graph key value | `0` |
@@ -245,10 +246,11 @@ Graph key values can be passed as strings (e.g., `SPEAKER` for playback,
 
 ### Example
 
-4-frame blocks (83 us at 48 kHz), the audio thread on the isolated CPU 7 under EVL:
+4-frame blocks (83 us at 48 kHz), the audio thread on the isolated CPU 7 under EVL, every
+CPU at its highest clock:
 
 ```bash
-./build/ar_audioengine --evl -m 7 -p 4
+./build/ar_audioengine --evl -m 7 -g -p 4
 ```
 
 ### Synchronized full-duplex start
@@ -258,7 +260,7 @@ when the second stream starts. `AE_START_STATUS=1` prints, at exit, when each in
 enabled and how many FIFO and bus errors each DMA had.
 
 ```bash
-AE_START_STATUS=1 ./build/ar_audioengine --evl -m 7 -p 4
+AE_START_STATUS=1 ./build/ar_audioengine --evl -m 7 -g -p 4
 ```
 
 Without the AGM branch
@@ -291,23 +293,26 @@ Besides the custom firmware with the CPU-buffer change, this needs:
   ```bash
   insmod ar_lpass_map.ko
   ```
-- **The DMAs' channel counts** for `-n` and `-N` (the defaults fit the RB3 Gen 2). The
-  engine checks them against what the firmware reports, and says what to pass if they
-  differ.
+- **The backend config** for the channels and rate. The engine also checks the channel
+  counts against what the firmware reports.
 - **`--evl`**, with the audio thread on an isolated CPU (`-m`). Without EVL the loop polls
   in a busy wait, and Linux still interrupts it now and then.
+- **`-g`**, the `performance` governor. The out-of-band audio thread may not count as load
+  for the default `schedutil` governor, which can then leave its CPU at a low clock.
 
 At exit the engine reports any late or skipped playback periods. On the RB3 Gen 2 (QLI
-2.1 Xenomai image, stock ACDB and AGM PCM plugin), 10 s per run:
+2.1 Xenomai image, stock ACDB and AGM PCM plugin), `-m 7 -g`, 10 s per run:
 
 | Block | With `--evl` | Without EVL |
 |---|---|---|
-| 4 frames (83 us) | no late or skipped periods in 8 of 9 runs; one run had 51,392 late and 7,346 skipped of 118,972 (cause not found) | 1 skipped, at the start |
-| 3 frames (63 us) | no late or skipped periods | no late or skipped periods |
-| 2 frames (42 us) | no late or skipped periods | no late or skipped periods |
-| 960 frames (20 ms) | no late or skipped periods | |
+| 4 frames (83 us) | no late or skipped periods (6 runs) | no late or skipped periods |
+| 3 frames (63 us) | no late or skipped periods | |
+| 2 frames (42 us) | no late or skipped periods | |
 
-Without EVL, earlier runs at 4 frames had up to 250 late periods in 10 s.
+Without `-g`: 3, 2 and 960-frame blocks had no late or skipped periods with `--evl`; at 4
+frames, 8 of 9 runs had none, and one had 51,392 late and 7,346 skipped of 118,972 (cause
+not found). Without either `-g` or EVL, runs at 4 frames had up to 250 late periods in
+10 s.
 
 ## Writing a project
 
@@ -319,12 +324,14 @@ Create a folder under `projects/` with at least a `render.cpp` file that impleme
 int setup(struct audio_ctx *ctx, void *user_data)
 {
     // Initialize your state
-    // ctx->sample_rate, ctx->channels, ctx->period_size are available
+    // ctx->sample_rate, ctx->period_size, ctx->channels (playback) and
+    // ctx->in_channels (capture) are available
     return 0; // return non-zero on failure
 }
 
 void render(struct audio_ctx *ctx, void *user_data)
 {
+    // ctx->audio_in holds the captured samples: ctx->period_size * ctx->in_channels
     // Fill ctx->audio_out with samples in [-1.0, 1.0]
     // Buffer layout: interleaved channels
     // Buffer size: ctx->period_size * ctx->channels
