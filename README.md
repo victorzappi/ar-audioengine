@@ -7,7 +7,7 @@ The developer writes a simple audio callback (`render()`), and the engine takes 
 ## Branches
 
 Each branch builds on the one above it, and needs more outside this repository. This is
-the **`sync-start`** branch.
+the **`cpu-buffer`** branch.
 
 | Branch | What it adds | QLI image | ADSP firmware | Also needs |
 |---|---|---|---|---|
@@ -196,6 +196,7 @@ long options).
 | `-g`, `--performance-governor` | Force every online CPU's scaling governor to `performance` for the run, restored on exit | `off` |
 | `-M`, `--mmap` | MMAP mode: read/write the DSP's shared ring buffers directly (needs Shared Memory Pull/Push Mode graphs) | `off` |
 | `--evl` | Run the audio thread out-of-band under EVL (Xenomai 4); needs `-M` and a build with `-DEVL=ON` | `off` |
+| `--cpu-buffer` | CPU-buffer route: read/write the Codec DMA buffers directly, the DSP does nothing per block; needs `-M`, full duplex, the custom firmware and `ar_lpass_map` (see [CPU-buffer route](#cpu-buffer-route)) | `off` |
 | `-h`, `--help` | Print help and exit | |
 | `--verbose` | Print engine diagnostics (device/graph setup, mixer ctls, CPU pinning...) | `off` |
 
@@ -280,6 +281,41 @@ Without that firmware the engine reports that sync start is off and starts the t
 streams one after the other. Without that AGM, the interfaces still start together, but
 the capture codec powers up after the start, which shifts capture by about 0.5 ms.
 Tested in RW mode and in MMAP mode (48-frame blocks).
+
+### CPU-buffer route
+
+With `--cpu-buffer`, the engine works on the Codec DMAs' own double buffers, as Bela does.
+When the capture DMA finishes a period, the engine reads it, calls `render()`, and writes
+the playback period after the one the playback DMA is reading. The DSP does nothing per
+block. From capture to playback takes 2 periods. Each block has one period, less one frame
+(the playback DMA's read-ahead), from the end of its capture period until the playback DMA
+reads it.
+
+Besides the custom firmware with the CPU-buffer change, this needs:
+
+- **The `ar_lpass_map` kernel module.** It maps the DMA buffers and registers into the
+  engine, since the kernel has no `/dev/mem`. Build it against the board's kernel (a
+  build tree prepared with `make modules_prepare`), then load it:
+  ```bash
+  make -C kernel/ar_lpass_map KDIR=<kernel build tree> ARCH=arm64 CROSS_COMPILE=aarch64-qcom-linux-
+  ```
+  ```bash
+  insmod ar_lpass_map.ko
+  ```
+- **`-M`, full duplex, and the DMAs' channel counts** for `-n` and `-N`. The engine checks
+  them against what the firmware reports, and says what to pass if they differ.
+- **`--evl`**, with the audio thread on an isolated CPU (`-m`). Without EVL the loop polls
+  in a busy wait, and Linux still interrupts it now and then.
+
+Example with 4-frame blocks (83 us at 48 kHz):
+
+```bash
+./build/ar_audioengine -s 0 -e 0 -E 1 -M --cpu-buffer --evl -m 7 -p 4 -q 2 -N 1 -w PCM_ULL_PLAYBACK -x 0 -y 0 -z SPEAKER -i INSTANCE_1 -W PCM_ULL_RECORD -X 0 -Y 0 -Z SPEAKER_MIC -I 0
+```
+
+At exit the engine reports any late or skipped playback periods. On the RB3 Gen 2 (QLI
+2.1 Xenomai image), 4-frame blocks for 10 s: no late or skipped periods with `--evl`, 3
+skipped without it.
 
 ## Writing a project
 
