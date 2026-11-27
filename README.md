@@ -6,15 +6,14 @@ The developer writes a simple audio callback (`render()`), and the engine takes 
 
 ## Branches
 
-Each branch builds on the one above it, and needs more outside this repository. This is
-the **`cpu-buffer`** branch.
+Each branch builds on the one above it. This is the **`cpu-buffer`** branch.
 
 | Branch | What it adds | QLI image | ADSP firmware | Also needs |
 |---|---|---|---|---|
 | `main` | The engine: `render()` once per period, audio read and written through AGM (RW mode) | QLI 1.8 or 2.1 (on 2.1: `-s 0 -e 0 -E 1`) | Stock | |
 | `mmap` | MMAP mode (`-M`): the engine reads and writes the DSP's shared ring buffers. Blocks shorter than 1 ms. EVL route (`--evl`) | QLI 2.1; the Xenomai (EVL) image for `--evl` | Custom: frame duration | An ACDB with Shared Memory Pull/Push Mode graphs (the QLI 2.1 ACDB has none). For periods under 48 frames, an AGM PCM plugin with a smaller minimum period |
 | `sync-start` | `mmap`, plus playback and capture Codec DMAs that start together | As `mmap` | Custom: frame duration, sync start | As `mmap`, plus the AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare) |
-| `cpu-buffer` | `sync-start`, plus the CPU-buffer route (`--cpu-buffer`): the engine reads and writes the Codec DMAs' own buffers, and the DSP does nothing per block | QLI 2.1 Xenomai (EVL) image | Custom: frame duration, sync start, CPU buffer | As `sync-start`, plus the `ar_lpass_map` kernel module (`kernel/ar_lpass_map`) |
+| `cpu-buffer` | The CPU-buffer route (`--cpu-buffer`): the engine reads and writes the Codec DMAs' own buffers, and the DSP does nothing per block. `sync-start` without its MMAP route | QLI 2.1 Xenomai (EVL) image | Custom: frame duration, sync start, CPU buffer | The AGM branch [`codec-dma-early-device-prepare`](https://github.com/victorzappi/audioreach-graphmgr/tree/codec-dma-early-device-prepare), and the `ar_lpass_map` kernel module (`kernel/ar_lpass_map`). The stock ACDB and AGM PCM plugin are fine |
 
 **Custom ADSP firmware:** built from Qualcomm's proprietary ADSP sources
 (ADSP.HT.5.5.c8-00256.2, `kodiak.adsp.prod`, for the QCS6490), with our changes to the
@@ -194,9 +193,8 @@ long options).
 | `-a`, `--echo-reference` | Enable the capture←playback echo reference path (only applied when capture is active) | `off` |
 | `-m`, `--cpu-affinity` | Pin the audio thread to this 0-based CPU index | unset (no affinity) |
 | `-g`, `--performance-governor` | Force every online CPU's scaling governor to `performance` for the run, restored on exit | `off` |
-| `-M`, `--mmap` | MMAP mode: read/write the DSP's shared ring buffers directly (needs Shared Memory Pull/Push Mode graphs) | `off` |
-| `--evl` | Run the audio thread out-of-band under EVL (Xenomai 4); needs `-M` and a build with `-DEVL=ON` | `off` |
-| `--cpu-buffer` | CPU-buffer route: read/write the Codec DMA buffers directly, the DSP does nothing per block; needs `-M`, full duplex, the custom firmware and `ar_lpass_map` (see [CPU-buffer route](#cpu-buffer-route)) | `off` |
+| `--evl` | Run the audio thread out-of-band under EVL (Xenomai 4); needs `--cpu-buffer` and a build with `-DEVL=ON` | `off` |
+| `--cpu-buffer` | CPU-buffer route: read/write the Codec DMA buffers directly, the DSP does nothing per block; needs full duplex, the custom firmware and `ar_lpass_map` (see [CPU-buffer route](#cpu-buffer-route)) | `off` |
 | `-h`, `--help` | Print help and exit | |
 | `--verbose` | Print engine diagnostics (device/graph setup, mixer ctls, CPU pinning...) | `off` |
 
@@ -280,7 +278,7 @@ This needs two changes outside this repository:
 Without that firmware the engine reports that sync start is off and starts the two
 streams one after the other. Without that AGM, the interfaces still start together, but
 the capture codec powers up after the start, which shifts capture by about 0.5 ms.
-Tested in RW mode and in MMAP mode (48-frame blocks).
+Tested in RW mode, and with the CPU-buffer route, which always starts the two together.
 
 ### CPU-buffer route
 
@@ -290,6 +288,12 @@ the playback period after the one the playback DMA is reading. The DSP does noth
 block. From capture to playback takes 2 periods. Each block has one period, less one frame
 (the playback DMA's read-ahead), from the end of its capture period until the playback DMA
 reads it.
+
+The audio goes only through the DMA buffers. The graphs are still opened and started,
+because the Codec DMA modules in them set up the DMAs, but no module runs per block. So
+the graphs can be any that reach the speaker and the mic Codec DMAs, and the PCMs are
+never read or written: the DMA block is the period given with `-p`, whatever period the
+PCM opens with.
 
 Besides the custom firmware with the CPU-buffer change, this needs:
 
@@ -302,20 +306,29 @@ Besides the custom firmware with the CPU-buffer change, this needs:
   ```bash
   insmod ar_lpass_map.ko
   ```
-- **`-M`, full duplex, and the DMAs' channel counts** for `-n` and `-N`. The engine checks
-  them against what the firmware reports, and says what to pass if they differ.
+- **Full duplex, and the DMAs' channel counts** for `-n` and `-N`. The engine checks them
+  against what the firmware reports, and says what to pass if they differ.
 - **`--evl`**, with the audio thread on an isolated CPU (`-m`). Without EVL the loop polls
   in a busy wait, and Linux still interrupts it now and then.
 
-Example with 4-frame blocks (83 us at 48 kHz):
+Example with 4-frame blocks (83 us at 48 kHz) and the stock QLI 2.1 graphs. The capture
+graph is `RAW_RECORD`: the stock `PCM_RECORD` graph includes Fluence, which this firmware
+does not open.
 
 ```bash
-./build/ar_audioengine -s 0 -e 0 -E 1 -M --cpu-buffer --evl -m 7 -p 4 -q 2 -N 1 -w PCM_ULL_PLAYBACK -x 0 -y 0 -z SPEAKER -i INSTANCE_1 -W PCM_ULL_RECORD -X 0 -Y 0 -Z SPEAKER_MIC -I 0
+./build/ar_audioengine -s 0 -e 0 -E 1 --cpu-buffer --evl -m 7 -p 4 -q 2 -N 1 -W RAW_RECORD -I 0 -Y 0
 ```
 
 At exit the engine reports any late or skipped playback periods. On the RB3 Gen 2 (QLI
-2.1 Xenomai image), 4-frame blocks for 10 s: no late or skipped periods with `--evl`, 3
-skipped without it.
+2.1 Xenomai image, stock ACDB and AGM PCM plugin), 10 s per run:
+
+| Block | With `--evl` | Without EVL |
+|---|---|---|
+| 4 frames (83 us) | no late or skipped periods | 1 skipped, at the start |
+| 3 frames (63 us) | no late or skipped periods | no late or skipped periods |
+| 2 frames (42 us) | no late or skipped periods | no late or skipped periods |
+
+Without EVL, earlier runs at 4 frames had up to 250 late periods in 10 s.
 
 ## Writing a project
 
