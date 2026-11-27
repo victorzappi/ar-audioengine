@@ -404,16 +404,18 @@ void sig_handler(int sig)
 // ---------------------------------------------------------------------------
 
 // build the render context: capture samples are the input, playback samples the
-// output. config: the playback stream's
+// output
 static struct audio_ctx create_audio_ctx(struct pcm_ctx *pb, struct pcm_ctx *cap,
-                                         const struct pcm_config *config)
+                                         const struct pcm_config *pb_config,
+                                         const struct pcm_config *cap_config)
 {
     struct audio_ctx actx = {
         .audio_in     = cap->audio_buffer,
         .audio_out    = pb->audio_buffer,
-        .period_size  = config->period_size,
-        .channels     = config->channels,
-        .sample_rate  = config->rate
+        .period_size  = pb_config->period_size,
+        .channels     = pb_config->channels,
+        .sample_rate  = pb_config->rate,
+        .in_channels  = cap_config->channels
     };
 
     return actx;
@@ -599,7 +601,7 @@ int audio_loop(struct settings *settings, struct pcm_ctx ctx[])
     const struct pcm_config *pb_config = &settings->playback.config;
     const struct pcm_config *cap_config = &settings->capture.config;
 
-    struct audio_ctx actx = create_audio_ctx(pb, cap, pb_config);
+    struct audio_ctx actx = create_audio_ctx(pb, cap, pb_config, cap_config);
 
     // user API function
     if (setup(&actx, settings->user_argv)) {
