@@ -57,7 +57,7 @@ int configure_agm_modules(unsigned int physical_card, unsigned int physical_devi
 int inspect_agm_modules();
 
 int configure_agm_hw_ep_block(char *frontend_name, char *backend_name, unsigned int period_frames,
-                              unsigned int rate);
+                              unsigned int rate, bool capture);
 
 int set_agm_ecref_path(char* cp_frontend_name, char* pb_backend_name, bool enable);
 

@@ -1348,18 +1348,19 @@ int configure_agm_dma_sink(char *frontend_name, unsigned int frame_size_fcr, uin
     return ret;
 }
 
-// sets the block of the playback hardware endpoint (module tagged DEVICE_HW_ENDPOINT_RX)
-// to period_frames. a block of whole ms goes as PARAM_ID_HW_EP_FRAME_SIZE_FACTOR, which
-// any Codec DMA firmware takes; any other block as PARAM_ID_HW_EP_FRAME_DURATION (us),
-// which needs the custom Codec DMA build. < 0 on error
+// sets the block of the playback (module tagged DEVICE_HW_ENDPOINT_RX) or capture
+// (DEVICE_HW_ENDPOINT_TX) hardware endpoint to period_frames. a block of whole ms goes as
+// PARAM_ID_HW_EP_FRAME_SIZE_FACTOR, which any Codec DMA firmware takes; any other block as
+// PARAM_ID_HW_EP_FRAME_DURATION (us), which needs the custom Codec DMA build. < 0 on error
 int configure_agm_hw_ep_block(char *frontend_name, char *backend_name, unsigned int period_frames,
-                              unsigned int rate)
+                              unsigned int rate, bool capture)
 {
     uint32_t miid = 0, mid = 0;
     int ret;
+    int tag = capture ? DEVICE_HW_ENDPOINT_TX : DEVICE_HW_ENDPOINT_RX;
 
-    if (get_agm_module_iid(frontend_name, backend_name, DEVICE_HW_ENDPOINT_RX, &miid, &mid) != 0) {
-        fprintf(stderr, "hardware endpoint block: no module tagged DEVICE_HW_ENDPOINT_RX\n");
+    if (get_agm_module_iid(frontend_name, backend_name, tag, &miid, &mid) != 0) {
+        fprintf(stderr, "hardware endpoint block: no module tagged %s\n", get_tag_name(tag));
         return -1;
     }
 

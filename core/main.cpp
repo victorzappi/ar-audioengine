@@ -458,12 +458,14 @@ static int init_pcm_dir(struct pcm_ctx* ctx, struct settings *settings, struct p
                 stream->config.period_size, stream->config.period_count,
                 open_config->period_size, open_config->period_count, pcm_get_buffer_size(ctx->pcm));
 
-    // MMAP mode: the loop writes and the DSP takes whole periods of the ring, so the DSP
-    // block must be the period. set the playback hardware endpoint's block from it, before
-    // prepare (whole ms on any firmware, anything else needs the custom Codec DMA build)
-    if ((stream->flags & PCM_MMAP) && !(stream->flags & PCM_IN) &&
+    // MMAP mode: the loop and the DSP exchange whole periods of the ring, so the DSP block
+    // must be the period. set the hardware endpoint's block from it, for playback and
+    // capture, before prepare (whole ms on any firmware, anything else needs the custom
+    // Codec DMA build)
+    if ((stream->flags & PCM_MMAP) &&
         configure_agm_hw_ep_block(stream->frontend_name, stream->backend_name,
-                                  open_config->period_size, open_config->rate) != 0) {
+                                  open_config->period_size, open_config->rate,
+                                  (stream->flags & PCM_IN) != 0) != 0) {
         pcm_close(ctx->pcm);
         ctx->pcm = nullptr;
         return -1;
