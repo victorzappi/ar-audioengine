@@ -860,6 +860,19 @@ done:
     return ret;
 }
 
+int get_agm_backend_format(const char *filename, char *backend_name, unsigned int *rate,
+                           unsigned int *channels, unsigned int *bits)
+{
+    struct device_config config;
+
+    if (get_backend_config(filename, backend_name, &config) != 0)
+        return -1;
+    *rate = config.rate;
+    *channels = config.ch;
+    *bits = config.bits;
+    return 0;
+}
+
 int set_agm_backend_config(char *backend_name, struct device_config *config)
 {
     if (g_verbose)

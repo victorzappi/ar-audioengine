@@ -61,6 +61,11 @@ int configure_agm_hw_ep_block(char *frontend_name, char *backend_name, unsigned 
 
 int set_agm_ecref_path(char* cp_frontend_name, char* pb_backend_name, bool enable);
 
+// a backend's format as the backend config file (backend_conf.xml) gives it: the format its
+// Codec DMA runs in. < 0 if the backend is not in the file
+int get_agm_backend_format(const char *filename, char *backend_name, unsigned int *rate,
+                           unsigned int *channels, unsigned int *bits);
+
 // sync start of the Codec DMA endpoints (needs the custom Codec DMA build): endpoints set
 // to the same non-zero group with the same member count leave their interface disabled at
 // start, and the last one to start enables them all back to back. applies to the next

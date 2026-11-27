@@ -68,8 +68,8 @@ int cpu_buffer_map(struct cpu_buffer_dma *dma, const struct hw_ep_cpu_buffer *in
         return -1;
     }
     if (info->num_channels != channels) {
-        fprintf(stderr, "CPU buffer: the %s DMA has %u channel(s), the stream %u: run with -%c %u\n",
-                name, info->num_channels, channels, playback ? 'n' : 'N', info->num_channels);
+        fprintf(stderr, "CPU buffer: the %s DMA has %u channel(s), the backend config %u\n", name,
+                info->num_channels, channels);
         return -1;
     }
     if (info->period_size != period_frames * channels * 4) {

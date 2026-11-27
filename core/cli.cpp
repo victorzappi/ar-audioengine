@@ -52,8 +52,8 @@ void init_settings(struct settings *settings)
     // count and format only matter for opening the graph
     playback->config.period_size = 960;
     playback->config.period_count = 2;
-    playback->config.channels = 2;
-    playback->config.rate = 48000;
+    playback->config.channels = 0;  // channels and rate: from the backend config
+    playback->config.rate = 0;
     playback->config.format = PCM_FORMAT_S16_LE;
 
     // these can be left to default, because ARE does not support aumtomatic pcm stop
@@ -93,8 +93,8 @@ void init_settings(struct settings *settings)
 
     capture->config.period_size = 960;
     capture->config.period_count = 2;
-    capture->config.channels = 1;  // the speaker mic's DMA is mono
-    capture->config.rate = 48000;
+    capture->config.channels = 0;
+    capture->config.rate = 0;
     capture->config.format = PCM_FORMAT_S16_LE;
 
     capture->config.silence_threshold = 0;
@@ -151,12 +151,12 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-c | --virtual-card <card num>         The virtual card number that contains the frontend device\n");
     fprintf(stderr, "-s | --physical-card <card num>        The physical card number that contains the backend device\n");
     fprintf(stderr, "-p | --period-size <size>              The block: frames per Codec DMA period, playback and capture\n");
-    fprintf(stderr, "-r | --rate <rate>                     The sample rate, playback and capture (the Codec DMAs' rate)\n");
     fprintf(stderr, "-m | --cpu-affinity <cpu index>        Pin the audio thread to this 0-based CPU index (default: unset, no affinity)\n");
     fprintf(stderr, "-g | --performance-governor             Force every online CPU's scaling governor to 'performance' for the duration of the audio thread (default off)\n");
     fprintf(stderr, "-h | --help                            Print this help and exit\n");
     fprintf(stderr, "     --evl                              Run the audio thread out-of-band under EVL (Xenomai 4); needs a build with -DEVL=ON (default off)\n");
     fprintf(stderr, "     --verbose                          Print engine diagnostics (device/graph setup, mixer ctls, CPU pinning...); default off, only the startup banner is printed\n");
+    fprintf(stderr, "\nChannels and rate come from the backend config (" BACKEND_CONF_FILE "): the Codec DMAs' format.\n");
     fprintf(stderr, "\nAny unrecognized options and trailing arguments are forwarded to the project\n");
     fprintf(stderr, "(as setup/render/cleanup's user_data, argv-style).\n");
 
@@ -165,7 +165,6 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-e | --playback-physical-device <num>  The physical device number that represents the backend\n");
     fprintf(stderr, "-t | --playback-frontend-name <name>   The frontend device name (parsed automatically if not set)\n");
     fprintf(stderr, "-k | --playback-backend-name <name>    The backend device name (parsed automatically if not set)\n");
-    fprintf(stderr, "-n | --playback-channels <count>       The number of channels (the playback DMA's)\n");
     fprintf(stderr, "-o | --playback-path <path>            The hardware mixer playback path\n");
     fprintf(stderr, "-w | --streamrx <value>                The stream key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-x | --streampp-rx <value>             The streampp key value as a string or number, both decimal and hex (0 if not present)\n");
@@ -178,7 +177,6 @@ static void print_usage(const char *argv0)
     fprintf(stderr, "-E | --capture-physical-device <num>   The physical device number that represents the backend\n");
     fprintf(stderr, "-T | --capture-frontend-name <name>    The frontend device name (parsed automatically if not set)\n");
     fprintf(stderr, "-K | --capture-backend-name <name>     The backend device name (parsed automatically if not set)\n");
-    fprintf(stderr, "-N | --capture-channels <count>        The number of channels (the capture DMA's)\n");
     fprintf(stderr, "-O | --capture-path <path>             The hardware mixer capture path\n");
     fprintf(stderr, "-W | --streamtx <value>                The stream key value as a string or number, both decimal and hex (0 if not present)\n");
     fprintf(stderr, "-X | --streampp-tx <value>             The streampp key value as a string or number, both decimal and hex (0 if not present)\n");
@@ -221,7 +219,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         { "virtual-card",            'c', OPTPARSE_REQUIRED },
         { "physical-card",           's', OPTPARSE_REQUIRED },
         { "period-size",             'p', OPTPARSE_REQUIRED },
-        { "rate",                    'r', OPTPARSE_REQUIRED },
         { "cpu-affinity",            'm', OPTPARSE_REQUIRED },
         { "performance-governor",    'g', OPTPARSE_NONE     },
         { "help",                    'h', OPTPARSE_NONE     },
@@ -230,7 +227,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         { "playback-physical-device",'e', OPTPARSE_REQUIRED },
         { "playback-frontend-name",  't', OPTPARSE_REQUIRED },
         { "playback-backend-name",   'k', OPTPARSE_REQUIRED },
-        { "playback-channels",       'n', OPTPARSE_REQUIRED },
         { "playback-path",           'o', OPTPARSE_REQUIRED },
         { "streamrx",                'w', OPTPARSE_REQUIRED },
         { "streampp-rx",             'x', OPTPARSE_REQUIRED },
@@ -242,7 +238,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
         { "capture-physical-device", 'E', OPTPARSE_REQUIRED },
         { "capture-frontend-name",   'T', OPTPARSE_REQUIRED },
         { "capture-backend-name",    'K', OPTPARSE_REQUIRED },
-        { "capture-channels",        'N', OPTPARSE_REQUIRED },
         { "capture-path",            'O', OPTPARSE_REQUIRED },
         { "streamtx",                'W', OPTPARSE_REQUIRED },
         { "streampp-tx",             'X', OPTPARSE_REQUIRED },
@@ -282,16 +277,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
             }
             settings->playback.config.period_size = v;
             settings->capture.config.period_size = v;
-            break;
-        }
-        case 'r': {
-            unsigned int v;
-            if (sscanf(opts.optarg, "%u", &v) != 1) {
-                fprintf(stderr, "failed parsing rate '%s'\n", opts.optarg);
-                return -1;
-            }
-            settings->playback.config.rate = v;
-            settings->capture.config.rate = v;
             break;
         }
         case 'm':
@@ -336,12 +321,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
             settings->playback.backend_name = strdup(opts.optarg);
             if (settings->playback.backend_name == nullptr) {
                 fprintf(stderr, "failed parsing playback backend name '%s'\n", opts.optarg);
-                return -1;
-            }
-            break;
-        case 'n':
-            if (sscanf(opts.optarg, "%u", &settings->playback.config.channels) != 1) {
-                fprintf(stderr, "failed parsing playback channel count '%s'\n", opts.optarg);
                 return -1;
             }
             break;
@@ -424,12 +403,6 @@ int parse_cli(int argc, char **argv, struct settings *settings)
             settings->capture.backend_name = strdup(opts.optarg);
             if (settings->capture.backend_name == nullptr) {
                 fprintf(stderr, "failed parsing capture backend name '%s'\n", opts.optarg);
-                return -1;
-            }
-            break;
-        case 'N':
-            if (sscanf(opts.optarg, "%u", &settings->capture.config.channels) != 1) {
-                fprintf(stderr, "failed parsing capture channel count '%s'\n", opts.optarg);
                 return -1;
             }
             break;

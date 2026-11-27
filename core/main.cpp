@@ -6,8 +6,8 @@
 /*ar_audioengine
 real-time audioreach-based audio engine
 
-usage (QLI 2.1, 4-frame blocks, audio thread on CPU 7 under EVL):
-./ar_audioengine --evl -m 7 -p 4
+usage (QLI 2.1, 4-frame blocks, audio thread on CPU 7 under EVL, performance governor):
+./ar_audioengine --evl -m 7 -g -p 4
 
 configure, build and clean commands in CMakeLists.txt
 */
@@ -207,6 +207,36 @@ static int resolve_stream_names(struct settings *settings)
         if (resolve_stream_names_dir(CARDS_CONF_FILE, settings->virtual_card,
                                         settings->physical_card, streams[d]) < 0)
             return -1;
+    }
+    return 0;
+}
+
+// the Codec DMAs run in the format of the backend config: take each stream's channels and
+// rate from there, so that render() and the DMA buffers always agree. both streams must
+// run at the same rate, the loop moves one capture and one playback period at a time
+static int apply_backend_formats(struct settings *settings)
+{
+    struct pcm_stream *streams[NUM_DIRS] = { &settings->playback, &settings->capture };
+
+    for (int d = 0; d < NUM_DIRS; d++) {
+        struct pcm_stream *s = streams[d];
+        unsigned int rate = 0, channels = 0, bits = 0;
+
+        if (get_agm_backend_format(BACKEND_CONF_FILE, s->backend_name, &rate, &channels, &bits) != 0 ||
+            rate == 0 || channels == 0) {
+            fprintf(stderr, "backend %s: no format in %s\n", s->backend_name, BACKEND_CONF_FILE);
+            return -1;
+        }
+        s->config.rate = rate;
+        s->config.channels = channels;
+        if (g_verbose)
+            printf("backend %s: %u Hz, %u channel(s), %u bits (%s)\n", s->backend_name, rate,
+                   channels, bits, BACKEND_CONF_FILE);
+    }
+    if (settings->playback.config.rate != settings->capture.config.rate) {
+        fprintf(stderr, "the playback and capture backends run at different rates (%u and %u Hz)\n",
+                settings->playback.config.rate, settings->capture.config.rate);
+        return -1;
     }
     return 0;
 }
@@ -777,6 +807,11 @@ int main(int argc, char **argv)
     }
 
     if (resolve_stream_names(&settings) < 0) {
+        cleanup_settings(&settings);
+        return EXIT_FAILURE;
+    }
+
+    if (apply_backend_formats(&settings) < 0) {
         cleanup_settings(&settings);
         return EXIT_FAILURE;
     }
