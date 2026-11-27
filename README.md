@@ -337,25 +337,25 @@ the speaker outputs are on the interposer). Built with
 ./build/ar_audioengine --evl -m 7 -g -p 2
 ```
 
-With the speaker a few cm from the mic (distance not measured), 3 runs of 10 s per block
-size, the same in every run:
+With the speaker 1 cm from the mic, one run of 10 s per block size (8 pulses each), the
+same for every pulse:
 
 | Block | Round trip | Engine: 2 blocks | The rest |
 |---|---|---|---|
-| 2 frames | 37 samples (0.77 ms) | 4 | 33 |
-| 3 frames | 39 samples (0.81 ms) | 6 | 33 |
-| 4 frames | 41 samples (0.85 ms) | 8 | 33 |
+| 2 frames | 34 samples (0.71 ms) | 4 | 30 |
+| 3 frames | 36 samples (0.75 ms) | 6 | 30 |
+| 4 frames | 38 samples (0.79 ms) | 8 | 30 |
 
-The first pulse of each run measured one sample less.
+The first pulse of each run measured one sample less. With the speaker a few cm away
+(3 runs of 10 s per block size) every round trip was 3 samples longer: 37, 39 and 41
+samples. Sound travels 0.71 cm in one sample at 48 kHz, so that was about 3 cm.
 
-So the round trip is 2 blocks plus about 30 samples: the codecs, the amplifier, the
-speaker, the mic, and the air. With the speaker about 1 cm from the mic the rest was about
-28 samples, about 1.4 of them air: 34 samples at 2-frame blocks, measured before the
-aligned start, when 2-frame blocks took 3 blocks (6 samples) because the playback DMA could
-read up to 3 frames ahead of the capture DMA. The microphone itself takes under 30 us
+So the round trip is 2 blocks plus 30 samples: the codecs, the amplifier, the speaker, the
+mic, 1.4 samples of air, and how far the playback DMA reads ahead of the capture DMA (the
+same on every start with the aligned start). The microphone itself takes under 30 us
 (TDK's T5818 datasheet): it only sends its 1-bit PDM stream, and the filtering is in the
 QCS6490. An earlier run at 4-frame blocks, with the speaker about 9 cm from the mic,
-measured 51 samples: 8 for the engine, and 13 more of air.
+measured 51 samples: 8 for the engine, and 13 more of air than at 1 cm.
 
 The DMA FIFOs don't add to it. With 16-frame blocks the round trip was 62 samples
 (2 x 16 + 30) with the default watermarks (one frame), with a playback watermark of 4 or
@@ -364,8 +364,8 @@ sample. A deeper playback FIFO also removes the FIFO error that the playback DMA
 at every start.
 
 The tester prints the pulse's peak at the mic and the noise every second. Set
-`--threshold` (default 0.1) between the two: at 1 cm the peak was -9.6 dBFS and the noise
--40.9 dBFS; with the speakers about 10 cm away the peak was only -25 dBFS, below the
+`--threshold` (default 0.1) between the two: at 1 cm the peak was -10.5 dBFS and the noise
+about -60 dBFS; with the speakers about 10 cm away the peak was only -25 dBFS, below the
 default threshold, and `--threshold 0.02` worked.
 
 ## Writing a project
